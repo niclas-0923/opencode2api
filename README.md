@@ -2,9 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [Tiếng Việt](README.vi.md) | [Italiano](README.it.md)
 
-A Go gateway for OpenCode Zen and Zen Go. Clients use OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages; the gateway selects an available upstream and converts the request and response when the native protocol differs. System One decisions have a separate pass-through endpoint.
+This fork is a keyless-only gateway for the OpenCode Zen free anonymous lane. Clients use OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages; the gateway uses the anonymous upstream plus configured proxy/WARP exits and converts the request and response when the native protocol differs.
 
-The executable embeds the management WebUI. Running it requires neither Node.js nor a database. Model discovery, inference, OAuth, and optional WARP still require access to their upstream services.
+This build supports the anonymous free channel only: no upstream key is needed, and Zen Go, paid keys, and OAuth connections have been removed. Multiple proxies (`proxies`, `proxyfile`, or the WARP exit pool) rotate outbound IPs. The executable embeds the management WebUI, and API plus WebUI share one port: `8080` serves `/v1` for the API, `/web` for the UI, and `/api` for management.
 
 ## Sponsors
 
@@ -35,11 +35,11 @@ go build -o opencode2api ./cmd/opencode2api
 
 Before starting, edit `config.json`:
 
-1. Replace `server_keys` with your own local API key.
-2. Supply a Zen API Key in `zen_keys` (recommended), or a Go key in `go_keys`. The example leaves both arrays empty and disables anonymous access, so configure an upstream credential before starting. An already saved Go OAuth (`go_oauth`) or Zen OAuth (`zen_oauth`) connection also satisfies this requirement; starting from empty credentials solely to open the OAuth WebUI is not supported.
+1. Replace `server_keys` with your own local API key (used by clients to call the gateway).
+2. No upstream key is needed. The anonymous channel is always enabled and only free models are routed. For multi-exit behavior, add proxies to `proxies` or `proxyfile`, or enable `warp` to use the in-process WARP exit pool.
 3. Replace `webui.password`. The example enables the WebUI with username `admin`.
 
-**Anonymous traffic may be heavily blocked upstream. Prefer a Zen API Key.** Anonymous access is off by default in the configuration and WebUI; existing configurations that explicitly set `anonymous: true` keep that choice. Enable it deliberately only if you accept that free requests may still fail.
+Free anonymous traffic may be rate-limited or blocked upstream. The way to improve reliability is more usable exits (a proxy pool or the WARP pool), not an upstream key.
 
 ```bash
 ./opencode2api -config config.json
@@ -47,21 +47,20 @@ Before starting, edit `config.json`:
 
 On Windows, use `Copy-Item config.example.json config.json`, build with `go build -o opencode2api.exe ./cmd/opencode2api`, then run `.\opencode2api.exe -config config.json`.
 
-The example listens on `127.0.0.1:8080` for the API and `0.0.0.0:8081` for the WebUI. Open `http://localhost:8081` locally. Restrict management access and use an HTTPS reverse proxy when accessing it over a network.
+The example listens only on `127.0.0.1:8080`. The API base is `http://127.0.0.1:8080/v1`, the WebUI is `http://localhost:8080/web`, and management endpoints live under `http://localhost:8080/api`. Restrict management access and use an HTTPS reverse proxy when accessing it over a network.
 
 Command-line options:
 
-| Option        | Default       | Purpose                            |
-| ------------- | ------------- | ---------------------------------- |
-| `-config`     | `config.json` | Configuration file path.           |
-| `-listen`     | Unset         | Override the API listen address.   |
-| `-web-listen` | Unset         | Override the WebUI listen address. |
+| Option    | Default       | Purpose                        |
+| --------- | ------------- | ------------------------------ |
+| `-config` | `config.json` | Configuration file path.       |
+| `-listen` | Unset         | Override the 8080 listener.    |
 
 The configuration directory must be writable for password migration, configuration saves, and model caches.
 
 ## Docker and Compose
 
-The published image is `ghcr.io/jasonxu114514/opencode2api`. Prepare `config.json` as above before starting. For published container ports, keep the internal API/WebUI listeners on `0.0.0.0:8080` and `0.0.0.0:8081`; restrict access using host-side port bindings and HTTPS where needed.
+The published image is `ghcr.io/jasonxu114514/opencode2api`. Prepare `config.json` as above before starting. For published container ports, keep the internal listener on `0.0.0.0:8080`; the API and WebUI share it. Restrict access using host-side port bindings and HTTPS where needed.
 
 ```bash
 docker compose up -d
@@ -75,17 +74,15 @@ docker compose cp config.json opencode2api:/var/lib/opencode2api/config.json
 docker compose restart
 ```
 
-Back up the active configuration and state before replacing them. The entrypoint runs the service as an unprivileged user and changes the exact example API listener `127.0.0.1:8080` to `0.0.0.0:8080` only while seeding. Compose uses a read-only root filesystem, a writable state volume, and a `/tmp` tmpfs. Default published ports bind on all host interfaces; edit `ports` to use `127.0.0.1:8080:8080` and `127.0.0.1:8081:8081` for local access only.
+Back up the active configuration and state before replacing them. The entrypoint runs the service as an unprivileged user and changes the exact example API listener `127.0.0.1:8080` to `0.0.0.0:8080` only while seeding. Compose uses a read-only root filesystem, a writable state volume, and a `/tmp` tmpfs. Default published ports bind on all host interfaces; edit `ports` to use `127.0.0.1:8080:8080` for local access only.
 
 | Compose variable | Default | Effect |
 | --- | --- | --- |
 | `OPENCODE2API_VERSION` | `latest` | Image tag; pin a release tag for a fixed version. |
-| `OPENCODE2API_PORT` | `8080` | Published host API port. |
-| `OPENCODE2API_WEBUI_PORT` | `8081` | Published host management port. |
-| `OPENCODE2API_LISTEN` | Unset | Explicit container API listener override. |
-| `OPENCODE2API_WEBUI_LISTEN` | Unset | Explicit container management listener override. |
+| `OPENCODE2API_PORT` | `8080` | Published host port (API and WebUI). |
+| `OPENCODE2API_LISTEN` | Unset | Explicit container listener override. |
 
-The last two become `LISTEN_ADDRESS` and `WEBUI_LISTEN_ADDRESS` in the container. Empty values defer to the active config. Changing host ports does not change internal listeners. If the internal API port changes, update both the port mapping and image health check, which uses 8080. A `proxyfile` must be mounted at its configured container path.
+`OPENCODE2API_LISTEN` becomes `LISTEN_ADDRESS` in the container. Empty values defer to the active config. Changing host ports does not change internal listeners. If the internal port changes, update both the port mapping and image health check, which uses 8080. A `proxyfile` must be mounted at its configured container path.
 
 Build and run a local image if needed:
 
@@ -93,7 +90,7 @@ Build and run a local image if needed:
 docker build -t opencode2api:local .
 docker volume create opencode2api-state
 docker run -d --name opencode2api \
-  -p 127.0.0.1:8080:8080 -p 127.0.0.1:8081:8081 \
+  -p 127.0.0.1:8080:8080 \
   -e CONFIG_SEED_PATH=/run/config/opencode2api.json \
   -v "$PWD/config.json:/run/config/opencode2api.json:ro" \
   -v opencode2api-state:/var/lib/opencode2api \
@@ -104,7 +101,7 @@ WARP needs outbound UDP to Cloudflare port `2408`; the image does not need host 
 
 ## Call the API
 
-The following are the existing compatibility routes. Set an OpenAI-compatible client's base URL to `http://127.0.0.1:8080/v1`; management uses its separate listener.
+The following are the existing compatibility routes. Set an OpenAI-compatible client's base URL to `http://127.0.0.1:8080/v1`; the WebUI is at `http://127.0.0.1:8080/web` and management endpoints at `http://127.0.0.1:8080/api`.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
@@ -159,20 +156,16 @@ The gateway does not implement embeddings, file uploads, image generation, or Re
 
 ## Configuration and routing
 
-[config.example.json](config.example.json) is the configuration reference to start from. File input permits `//` and `/* ... */` comments; API request bodies require standard JSON. Unknown fields, invalid values, repeated top-level fields, and conflicting old/new OAuth fields are rejected. Saving normalizes the configuration and removes comments.
+[config.example.json](config.example.json) is the configuration reference to start from. File input permits `//` and `/* ... */` comments; API request bodies require standard JSON. Unknown fields, invalid values, and repeated top-level fields are rejected. Legacy `zen_keys`, `go_keys`, `prefer`, `go_oauth`, and `zen_oauth` values still load but are ignored and removed on save. Saving normalizes the configuration and removes comments.
 
 | Setting | Default / meaning |
 | --- | --- |
 | `server_keys` | At least one enabled local key is required. |
-| `zen_keys`, `go_keys` | Independent upstream key pools; empty in the example. |
-| `prefer` | `go`; selects the preferred available authenticated tier, or `zen`. |
-| `anonymous` | `false`; enables the upstream `public` credential for eligible free models. |
-| `upstream.zen` | `https://opencode.ai/zen` for manual Zen keys. |
-| `upstream.go` | `https://opencode.ai/zen/go` for manual Go keys and their usage endpoint. |
+| `anonymous` | Forced to `true` in this build; the anonymous free channel is always enabled. |
 | `upstream.anonymous` | `https://opencode.ai/inference` for anonymous traffic. |
 | `models.refresh_seconds` | `300`; model discovery interval. |
 | `models.protocols` | Per-model native-protocol overrides: `chat`, `responses`, `anthropic`, or `systemone`. |
-| `models.free_only` | `false`; filters both model discovery and routing to free models. |
+| `models.free_only` | `true`; filters both model discovery and routing to free models; keep it enabled. |
 | `models.active_probes` | `false`; optional synthetic free-model inference probes. |
 | `reasoning.effort` | Unset in built-in defaults; the example sets `high`. |
 | `reasoning.effort_by_model` | Per-model override of the default effort. |
@@ -181,15 +174,13 @@ The gateway does not implement embeddings, file uploads, image generation, or Re
 
 Discovery combines upstream model lists with the OpenCode capability and price catalog at `https://models.opencode.ai/api.json`. It tracks native protocols per tier and exposes available context/token limits, prices, `native_protocol`, `supported_endpoints`, and reasoning metadata through `/v1/models`. Price/deprecation metadata refreshes every 24 hours; failed refreshes retain existing data. Prices are metadata, not a billing estimate or account balance.
 
-With manual keys, eligible free models can first use the anonymous lane when explicitly enabled, then the available keyed tiers in `prefer` order. Without anonymous access they use configured keys. Free eligibility comes from a case-insensitive `free` in the model ID or non-deprecated metadata with zero input and output cost; eligibility does not guarantee acceptance upstream. Paid models require an appropriate authenticated route. `models.free_only` also filters members of rotation groups.
-
-OAuth routes follow separate rules: the selected OAuth tier owns the request, uses only its confirmed routes, and does not fall back to anonymous traffic, manual keys, or another tier after failure. Selecting Go OAuth never triggers a PAYG request on authorization failure, quota exhaustion, or 429. When both tiers serve a model, explicitly choosing `prefer: "zen"` permits the connected Zen PAYG route.
+Every inference request uses the anonymous free channel only; there is no key, OAuth, or paid fallback. Free eligibility comes from a case-insensitive `free` in the model ID or non-deprecated metadata with zero input and output cost; eligibility does not guarantee acceptance upstream, and paid models are never routed. The gateway rotates across proxies/WARP exits to avoid single-exit throttling, and can pause the whole lane via `models.anonymous_backoff` after repeated failures.
 
 ### Timeouts, proxies, and affinity
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `retry.max_attempts` | `3` | Retry budget for keyed loops; anonymous and rotation paths have their own selection rules. |
+| `retry.max_attempts` | `3` | Per-request attempt budget; the anonymous lane has its own exit-selection rules. |
 | `retry.timeout_seconds` | `300` | Whole inference budget, including stream consumption. |
 | `performance.attempt_timeout_seconds` | `0` | Optional shorter attempt bound; zero leaves the request timeout. |
 | `performance.first_event_timeout_seconds` | `0` | Optional first-event wait; zero disables it. |
@@ -212,7 +203,7 @@ An optional `models.anonymous_backoff` object pauses the anonymous lane after re
 
 ### Free-model request shaping and reasoning
 
-Free-model compatibility can inject the official OpenCode system prompt and tool definitions, rename client tools on the wire, and restore their names in responses. This also affects free models served by keys. The gateway relays tool calls; it does not execute tools on the host. System One is excluded from message/tool shaping.
+Free-model compatibility can inject the official OpenCode system prompt and tool definitions, rename client tools on the wire, and restore their names in responses. The gateway relays tool calls; it does not execute tools on the host. System One is excluded from message/tool shaping.
 
 The injected prompt includes a working directory, workspace, platform, model, and UTC date. By default these describe the gateway host. Set `upstream.prompt_environment` to supply compatibility text for remote clients:
 
@@ -222,46 +213,29 @@ The injected prompt includes a working directory, workspace, platform, model, an
 
 Merge that object into `upstream.prompt_environment`. Paths are text, not accessed by this setting. `windows` normalizes to `win32`; `linux` and `darwin` are also accepted. A client-supplied official prompt is not replaced. There are no dedicated UI fields for these advanced values; edit the file and reload it. Arbitrary environment overrides have not been verified against upstream validation.
 
-Reasoning accepts `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `none`, `auto`, or an empty value. Explicit client effort takes precedence. `none` removes reasoning settings. `auto` uses a recently validated effort ceiling only for eligible free Zen/anonymous models; it does not expand probe scope. Automatic discovery needs active probes, may make several billable/quota-consuming requests, and expires after two hours. Go/paid models and unverified levels get no inferred override.
+Reasoning accepts `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `none`, `auto`, or an empty value. Explicit client effort takes precedence. `none` removes reasoning settings. `auto` uses a recently validated effort ceiling only for eligible free anonymous models; it does not expand probe scope. Automatic discovery needs active probes, may make several requests, and expires after two hours. Unverified levels get no inferred override.
 
 Availability is learned from real traffic by default. Synthetic checks run only with `models.active_probes: true`; the management probe action schedules checks but does not override this switch. Explicit model-retired/not-found evidence can disable a model. Rate limits, authentication failures, generic errors, and timeouts do not prove retirement. Manual restore keeps a model enabled and excludes it from automatic probing until automatic control is restored.
 
 ### WARP
 
-`warp.enabled` defaults to `false`. When enabled, free anonymous/manual-Zen traffic and their discovery/probe paths use an in-process Cloudflare WARP tunnel. Go traffic, paid traffic, and OAuth routes retain their configured proxy routing. WARP needs outbound UDP to Cloudflare port `2408`; no TUN device or routing-table change is required. Initialization failure rejects startup or the candidate configuration.
+`warp.enabled` defaults to `false`. When enabled, anonymous traffic and its discovery/probe paths can use an in-process Cloudflare WARP tunnel as an exit; the runtime selects among static proxies and WARP exits by health. WARP needs outbound UDP to Cloudflare port `2408`; no TUN device or routing-table change is required. Initialization failure rejects startup or the candidate configuration.
 
 `warp.pool_size` is a concurrency-driven exit ceiling from 1 to 32, default 2. `warp.stack` accepts `ipv6` (default), `ipv4`, or `dual`. Replacing an exit does not guarantee a fresh upstream allowance. `warp.source_ipv6` is optional, requires the IPv6 stack and a prefix of `/64` or shorter, and on Windows the selected source addresses must already be assigned to an interface. It does not configure host networking.
 
-## Management and OAuth
+## Management and configuration
 
-The WebUI has overview, diagnostics/Playground/logs, client access, API keys, models/quota, rotation, configuration, and account pages. It supports Simplified Chinese, English, Vietnamese, and Italian; language/theme choices are stored in the browser. See the [management guide](docs/management.md) for endpoint details.
+The WebUI has overview, diagnostics/Playground/logs, client access, API keys, configuration, and account pages. It supports Simplified Chinese, English, Vietnamese, and Italian; language/theme choices are stored in the browser. See the [management guide](docs/management.md) for endpoint details.
 
-Management authentication uses an administrator session cookie, CSRF tokens for writes, and login throttling. Changing the administrator credentials invalidates sessions. Local API keys do not grant management access. `GET /api/config` masks secrets; password-confirmed reveal can expose manual keys/proxy values, but never OAuth tokens.
+Management authentication uses an administrator session cookie, CSRF tokens for writes, and login throttling. Changing the administrator credentials invalidates sessions. Local API keys do not grant management access. `GET /api/config` masks secrets; password-confirmed reveal can expose local keys and proxy values.
 
-Use **Models & Quota** to start a Device OAuth login. Open the displayed official verification URL yourself, enter `user_code`, authorize the request you initiated, and select an organization/workspace if asked. The backend polls and refreshes credentials; there is no token-paste, local credential-file import, or callback-URL workflow.
+This build has no upstream key pools, Go/Zen OAuth, quota views, or rotation UI. The anonymous channel, proxies, and WARP exits are configured on the configuration page; saves apply to new requests and listener changes need a restart.
 
-| Connection | Scope and constraints |
-| --- | --- |
-| Go OAuth | Official Go subscription routes only; allowance is shown as unknown. |
-| Zen OAuth | Console PAYG using workspace credits; explicit acknowledgement is required before starting. Credit balance is shown as unknown. |
-
-Go and Zen pending logins, saved credentials, refresh state, and disconnect actions are separate. Hiding/leaving the page stops automatic polling; returning can resume an unexpired login. Logout cancels that session's pending logins and preserves completed connections. Canceling a pending login does not disconnect an existing account.
-
-Saved connections are `go_oauth` and `zen_oauth` in the configuration and contain access/refresh credentials. Protect the configuration and its backups. Manual keys remain saved but are not fallback routes while the corresponding OAuth connection exists, including when it needs a new login. Disconnect removes only the local connection, restores manual routing after discovery, and does not revoke the official session. Keep another credential before disconnecting the last usable connection with anonymous access disabled.
-
-Only routes from authenticated official remote configuration that pass plan-specific URL and SDK validation are accepted. The gateway does not derive PAYG URLs from Go routes or import arbitrary remote headers. Ordinary config saves preserve backend-managed OAuth credentials. Legacy `go_subscription`/`zen_subscription` fields migrate on load; combining old and new fields for one plan is rejected.
-
-OAuth integration follows the upstream source snapshots listed in the management guide. This documents implementation behavior, not successful live authorization or inference against every account; upstream permissions and route formats can change.
-
-### Local keys, quota, and rotation
+### Local keys
 
 The API-key page creates, names, enables, disables, and deletes local keys. Generated keys contain 192 random bits. Custom keys accept 16–256 characters from letters, digits, `.`, `_`, and `-`; names accept 1–80 characters, with at most 200 keys. At least one must remain enabled. New requests observe changes immediately. There are no per-key model permissions, spending limits, or expiry settings.
 
-Manual Go-key quota comes from the configured Go upstream's `/v1/usage`: shared rolling/weekly/monthly percentage windows, not per-model balances. Keys can share the same allowance, so their percentages are not added. Successes cache for 60 seconds, failures for 15; old data is marked stale. OAuth quota/credits are unknown and are never inferred from manual keys or successful requests.
-
-Rotation aliases `sota` and `sweet` use Go models and work with the three message endpoints, including streaming. Each group has a service-wide current model that stays after success and advances on failure. SOTA contains `deepseek-v4.1-flash`, `glm-5.3`, `grok-4.6`, `kimi-k3`, and `qwen3.8-max`; Sweet collects other eligible Go models. Availability follows actual discovery, not the fixed names. Aliases/order and the first-output timeout are editable in `/#rotation`.
-
-The ordinary-error budget is three models with up to three attempts each. Quota/rate-limit failures skip directly to the next model; rotating cannot create extra shared quota. Once stream output is committed, an error ends that answer and advances the group for the next request. Responses keep the requested alias in `model`; `X-Resolved-Model` identifies the actual model. State persists beside the configuration.
+Upstream quota views and SOTA/Sweet rotation depend on Go models and are no longer exposed in this build.
 
 ## Operations and security
 
@@ -279,13 +253,13 @@ Names use the actual configuration path. Monitoring survives hot reloads but is 
 
 `GET /healthz` makes no upstream request and requires no key. Pending/empty discovery, unavailable WARP, or missing required healthy proxies return 503. A usable stale catalog can return 200 with `status: "degraded"`; stale means older than twice the refresh interval, at least 60 seconds. Readiness is not proof of a valid key, remaining allowance, or successful inference. The public response contains counts/status, not secret values or proxy addresses.
 
-Keep API and management listeners on loopback for local use. For network access, use HTTPS and restrict access to management. A trusted reverse proxy must set `X-Forwarded-Proto` consistently; rate limiting uses the direct peer, so clients behind one proxy share its limits. The executable itself serves HTTP.
+Keep the 8080 listener on loopback for local use. For network access, use HTTPS and restrict access to management. A trusted reverse proxy must set `X-Forwarded-Proto` consistently; rate limiting uses the direct peer, so clients behind one proxy share its limits. The executable itself serves HTTP.
 
-Configuration files and backups hold upstream keys, proxy passwords, and OAuth tokens; password hashing does not encrypt them. Restrict filesystem permissions (Windows ACLs when applicable) and exclude runtime files from source sharing. `logging.dump_request_bodies` is off by default and requires debug logging; even redacted, capped body dumps can reveal conversation content. Playground and availability probes send real upstream requests and can consume quota or credits.
+Configuration files and backups hold proxy passwords and local key values; password hashing does not encrypt them. Restrict filesystem permissions (Windows ACLs when applicable) and exclude runtime files from source sharing. `logging.dump_request_bodies` is off by default and requires debug logging; even redacted, capped body dumps can reveal conversation content. Playground and availability probes send real upstream requests and can consume quota or credits.
 
 ## Local development and verification
 
-`cmd/opencode2api` starts the service. `internal/admin` owns management, `gateway` owns routing/runtime, `protocol` handles JSON/SSE conversion, `models` owns discovery, `oauth` owns official authorization, `config` owns validation/persistence, and `telemetry` owns metrics/logging. Static assets live in `webui`; no frontend package installation is required.
+`cmd/opencode2api` starts the service. `internal/admin` owns management, `gateway` owns routing/runtime, `protocol` handles JSON/SSE conversion, `models` owns discovery, `config` owns validation/persistence, and `telemetry` owns metrics/logging. Static assets live in `webui`; no frontend package installation is required.
 
 The native Go commands for a normal development environment are:
 
@@ -307,9 +281,8 @@ Run these commands in Bash (Git Bash on Windows). See [verification and maintena
 | Symptom | What to inspect |
 | --- | --- |
 | API 401 | The local key, its enabled state, and the client header. |
-| Startup rejects credentials | Configure an upstream key/saved OAuth connection, or deliberately enable anonymous access. |
-| No models / health 503 | Discovery status, supported native protocols, configured credentials, and resource availability. |
-| OAuth requests fail | Safe connection state and whether reauthorization is required; no automatic PAYG fallback occurs. |
+| Startup rejects credentials | Check that `server_keys` is configured; the anonymous lane needs no upstream credentials. |
+| No models / health 503 | Discovery status, supported native protocols, and proxy/WARP exit availability. |
 | HTTP 200 but generation fails | SSE error events, request outcome, and `x-request-id` logs. |
 | Changes do not apply | Save/reload the active config; restart for listener changes. |
 | Host config edits do not affect Compose | The active config is in the state volume; import the file again or use the WebUI. |
