@@ -50,7 +50,7 @@ Windows 原生方式为 `go build -trimpath -o opencode2api.exe ./cmd/opencode2a
 
 管理员通过用户名/密码登录，获得 `HttpOnly`、`SameSite=Strict` Session Cookie。所有管理 API 除登录均需有效 Session；写操作另需 `X-CSRF-Token`，带 `Origin` 时须与服务来源一致。登录/Session 响应提供 `csrf_token`。本地 `server_keys` 不能代替管理登录。
 
-Session 默认 720 分钟，范围 5–10,080 分钟。修改管理员凭证或重启进程会使现有 Session 失效；改账号接口要求再次验证当前密码。登录有限流；Playground 每直连客户端每分钟最多 12 次。默认不信任 `X-Forwarded-For`，反向代理后的客户端共享对端限制；将代理接入地址列入 `webui.trusted_proxies`（IP 或 CIDR）后，`X-Forwarded-For` 最右侧地址成为各客户端的限流身份，且仅受信代理的 `X-Forwarded-Proto` 会被采纳，代理须自行设置或追加该头。HTTPS 反向代理还须透传原始 Host 头并正确设置 `X-Forwarded-Proto` 为 `https`，它参与 Cookie Secure 标记与来源校验。
+Session 默认 720 分钟，范围 5–10,080 分钟。修改管理员凭证或重启进程会使现有 Session 失效；改账号接口要求再次验证当前密码。登录有限流；Playground 每直连客户端每分钟最多 12 次。默认不信任 `X-Forwarded-For`，反向代理后的客户端共享对端限制；将代理接入地址列入 `webui.trusted_proxies`（IP 或 CIDR）后，`X-Forwarded-For` 最右侧地址成为各客户端的限流身份，且仅受信代理的 `X-Forwarded-Proto` 会被采纳，代理须自行设置或追加该头。HTTPS 反向代理还须透传原始 Host 头并正确设置 `X-Forwarded-Proto` 为 `https`，它参与 Cookie Secure 标记与来源校验。经 HTTPS 到达的管理响应会携带 HSTS 与 `X-Robots-Tag: noindex`。
 
 ## 配置保存与重载
 
