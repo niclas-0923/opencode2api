@@ -253,14 +253,18 @@ type LoggingConfig struct {
 	DumpRequestBodies bool `json:"dump_request_bodies"`
 }
 
-// WebUIConfig configures the management WebUI. Password is a plaintext
-// password supplied only to set one: it is hashed into PasswordHash and
-// cleared before the configuration is saved. SessionTTLMinutes is the
-// lifetime of a login session. Changes to Enabled and Listen take effect only
-// after a restart.
+// WebUIConfig configures the management WebUI, which shares the API
+// listener: it is served under /web and its API under /api. Password is a
+// plaintext password supplied only to set one: it is hashed into PasswordHash
+// and cleared before the configuration is saved. SessionTTLMinutes is the
+// lifetime of a login session. A change to Enabled takes effect only after a
+// restart.
 type WebUIConfig struct {
-	Enabled           bool   `json:"enabled"`
-	Listen            string `json:"listen"`
+	Enabled bool `json:"enabled"`
+	// Listen is deprecated and ignored: the WebUI shares the API listener.
+	// It is accepted so configurations written for the old two-listener layout
+	// still load, and Normalize clears it so the next save drops it.
+	Listen            string `json:"listen,omitempty"`
 	Username          string `json:"username"`
 	Password          string `json:"password,omitempty"`
 	PasswordHash      string `json:"password_hash,omitempty"`
@@ -341,15 +345,15 @@ func Load(path string) (Config, error) {
 	}
 	cfg := Config{
 		Listen:      "127.0.0.1:8080",
-		Anonymous:   false,
+		Anonymous:   true,
 		Warp:        WarpConfig{PoolSize: 2, Stack: string(warp.DefaultStack)},
 		Upstream:    UpstreamConfig{Zen: "https://opencode.ai/zen", Go: "https://opencode.ai/zen/go", Anonymous: "https://opencode.ai/inference"},
 		Retry:       RetryConfig{MaxAttempts: 3, TimeoutSeconds: 300},
 		Models:      ModelsConfig{RefreshSeconds: 300, Protocols: map[string]string{}},
 		Performance: PerformanceConfig{MaxIdleConns: 2048, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 0, IdleConnTimeoutSeconds: 120, ConnectTimeoutSeconds: 5, FailureCooldownSeconds: 15},
 		Logging:     LoggingConfig{Level: "info", RingSize: 2000},
-		WebUI:       WebUIConfig{Listen: "0.0.0.0:8081", SessionTTLMinutes: 720},
-		Prefer:      TierGo,
+		WebUI:       WebUIConfig{SessionTTLMinutes: 720},
+		Prefer:      TierZen,
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -376,11 +380,16 @@ func Normalize(path string, cfg Config) (Config, error) {
 	trimList(&cfg.ServerKeys)
 	remapServerKeyMetadata(&cfg)
 
-	trimList(&cfg.ZenKeys)
-	trimList(&cfg.GoKeys)
-	// A placeholder copied from the documentation is not a credential. Treating
-	// it as one routes every free-model failure into a 401 from the keyed tier.
-	cfg = DropPlaceholderKeys(cfg)
+	// This build serves the keyless free lane only. Keyed tiers and saved
+	// OAuth connections are accepted from older files but ignored, and the
+	// next save drops them, so a configuration can never route paid traffic.
+	cfg.Anonymous = true
+	cfg.ZenKeys = nil
+	cfg.GoKeys = nil
+	cfg.GoOAuth = nil
+	cfg.ZenOAuth = nil
+	cfg.Prefer = TierZen
+	cfg.WebUI.Listen = ""
 	cfg.ProxyFile = strings.TrimSpace(cfg.ProxyFile)
 	if err := resolveProxyFiles(path, &cfg); err != nil {
 		return Config{}, err
@@ -450,9 +459,6 @@ func Normalize(path string, cfg Config) (Config, error) {
 	if cfg.FirstEnabledServerKey() == "" {
 		return Config{}, errors.New("at least one server key must remain enabled")
 	}
-	if !cfg.Anonymous && len(cfg.ZenKeys) == 0 && len(cfg.GoKeys) == 0 && cfg.GoOAuth == nil && cfg.ZenOAuth == nil {
-		return Config{}, errors.New("configure a Zen API Key (zen_keys), a Go key (go_keys), or a saved Go/Zen OAuth connection; anonymous access is disabled by default and may be blocked upstream")
-	}
 	if cfg.Retry.MaxAttempts < 1 {
 		return Config{}, errors.New("retry.max_attempts must be at least 1")
 	}
@@ -487,11 +493,7 @@ func Normalize(path string, cfg Config) (Config, error) {
 		return Config{}, errors.New("webui.password must contain at least 10 characters")
 	}
 	if cfg.WebUI.Enabled {
-		cfg.WebUI.Listen = strings.TrimSpace(cfg.WebUI.Listen)
 		cfg.WebUI.Username = strings.TrimSpace(cfg.WebUI.Username)
-		if cfg.WebUI.Listen == "" {
-			return Config{}, errors.New("webui.listen must not be empty when webui is enabled")
-		}
 		if cfg.WebUI.Username == "" {
 			return Config{}, errors.New("webui.username must not be empty when webui is enabled")
 		}

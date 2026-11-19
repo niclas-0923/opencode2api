@@ -404,7 +404,7 @@ func (m *Metrics) Record(endpoint string, status int, duration time.Duration, me
 // Arbitrary 404 paths must not allocate a new counter on every request.
 func metricEndpoint(path string) string {
 	switch path {
-	case "/healthz", "/v1/models", "/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/systemone":
+	case "/", "/web", "/web/", "/healthz", "/v1/models", "/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/systemone":
 		return path
 	default:
 		return "other"

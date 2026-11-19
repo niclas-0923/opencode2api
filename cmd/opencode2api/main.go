@@ -27,7 +27,6 @@ func main() {
 	buildinfo.Version = version
 	configPath := flag.String("config", "config.json", "path to config.json")
 	listen := flag.String("listen", "", "override the configured API listen address")
-	webListen := flag.String("web-listen", "", "override the configured WebUI listen address")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -39,9 +38,6 @@ func main() {
 	}
 	if *listen != "" {
 		cfg.Listen = *listen
-	}
-	if *webListen != "" {
-		cfg.WebUI.Listen = *webListen
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -60,20 +56,25 @@ func main() {
 	}
 	defer manager.Shutdown()
 
+	// One listener serves everything: the gateway's API under /v1 and
+	// /healthz, the management API under /api, and the WebUI under /web. When
+	// the WebUI is disabled those admin paths are left to the gateway's 404.
+	handler := manager.Handler()
+	if cfg.WebUI.Enabled {
+		admin := adminui.New(manager, monitor, hub, logger)
+		web := admin.Handler()
+		root := http.NewServeMux()
+		root.Handle("/", handler)
+		root.Handle("/api/", web)
+		root.Handle("/web/", http.StripPrefix("/web", web))
+		root.Handle("/web", http.RedirectHandler("/web/", http.StatusMovedPermanently))
+		handler = root
+	}
 	apiServer := &http.Server{
-		Addr: cfg.Listen, Handler: manager.Handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
+		Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
 	}
 	servers := []*http.Server{apiServer}
 	go serveHTTP(cancel, logger, apiServer, "api")
-
-	if cfg.WebUI.Enabled {
-		admin := adminui.New(manager, monitor, hub, logger)
-		webServer := &http.Server{
-			Addr: cfg.WebUI.Listen, Handler: admin.Handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
-		}
-		servers = append(servers, webServer)
-		go serveHTTP(cancel, logger, webServer, "webui")
-	}
 
 	<-ctx.Done()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)

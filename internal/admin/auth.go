@@ -106,7 +106,6 @@ func (a *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		delete(a.sessions, tokenDigest(cookie.Value))
 		a.mu.Unlock()
-		a.cancelOAuth(tokenDigest(cookie.Value))
 	}
 	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: requestIsSecure(r)})
 	w.WriteHeader(http.StatusNoContent)
@@ -215,7 +214,6 @@ func (a *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.sessions = make(map[string]adminSession)
 	a.mu.Unlock()
-	a.cancelOAuth("")
 	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: requestIsSecure(r)})
 	a.logger.Info("admin account updated", "component", "auth", "event", "account_updated", "client_ip", clientIP(r))
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"updated": true, "reauthenticate": true})

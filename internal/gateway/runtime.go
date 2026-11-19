@@ -84,7 +84,6 @@ type RuntimeController struct {
 // bound at startup. They only change after a restart.
 type EffectiveListeners struct {
 	API          string
-	WebUI        string
 	WebUIEnabled bool
 }
 
@@ -97,7 +96,7 @@ type EffectiveListeners struct {
 func RuntimeManager(root context.Context, configPath string, cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, hub *telemetry.LogBroker, redactor *config.Redactor, level *slog.LevelVar) (*RuntimeController, error) {
 	manager := &RuntimeController{
 		configPath: configPath, root: root, logger: logger, monitor: monitor, hub: hub, redactor: redactor, level: level,
-		effective: EffectiveListeners{API: cfg.Listen, WebUI: cfg.WebUI.Listen, WebUIEnabled: cfg.WebUI.Enabled},
+		effective: EffectiveListeners{API: cfg.Listen, WebUIEnabled: cfg.WebUI.Enabled},
 	}
 	manager.metadata = modelcatalog.PricingStore(configPath, logger)
 	// OpenCode metadata refreshes ride the active runtime's healthy proxy
@@ -337,17 +336,14 @@ func (m *RuntimeController) Config() config.Config {
 	return config.Clone(runtime.config)
 }
 
-// RestartStatus returns the listeners the process bound at startup and the
-// config fields (listen, webui.listen, webui.enabled) whose current value
-// differs from them, i.e. the changes waiting for a restart.
+// RestartStatus returns the listener the process bound at startup and the
+// config fields (listen, webui.enabled) whose current value differs from it,
+// i.e. the changes waiting for a restart.
 func (m *RuntimeController) RestartStatus() (EffectiveListeners, []string) {
 	cfg := m.Config()
-	fields := make([]string, 0, 3)
+	fields := make([]string, 0, 2)
 	if cfg.Listen != m.effective.API {
 		fields = append(fields, "listen")
-	}
-	if cfg.WebUI.Listen != m.effective.WebUI {
-		fields = append(fields, "webui.listen")
 	}
 	if cfg.WebUI.Enabled != m.effective.WebUIEnabled {
 		fields = append(fields, "webui.enabled")
@@ -424,9 +420,6 @@ func (m *RuntimeController) applyLocked(candidate config.Config, persist bool) (
 	result := ApplyResult{Applied: true}
 	if normalized.Listen != m.effective.API {
 		result.RestartFields = append(result.RestartFields, "listen")
-	}
-	if normalized.WebUI.Listen != m.effective.WebUI {
-		result.RestartFields = append(result.RestartFields, "webui.listen")
 	}
 	if normalized.WebUI.Enabled != m.effective.WebUIEnabled {
 		result.RestartFields = append(result.RestartFields, "webui.enabled")

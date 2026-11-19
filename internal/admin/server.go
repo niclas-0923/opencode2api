@@ -18,14 +18,12 @@ import (
 	"opencode2api/internal/config"
 	"opencode2api/internal/gateway"
 	"opencode2api/internal/httpx"
-	"opencode2api/internal/oauth"
 	"opencode2api/internal/telemetry"
 	"opencode2api/webui"
 )
 
 // Server serves the management API and the embedded WebUI. All mutable state
-// here is guarded by mu; quotaCache has its own quotaMu because a quota
-// refresh holds it across network calls.
+// here is guarded by mu.
 type Server struct {
 	manager       *gateway.RuntimeController
 	monitor       *telemetry.Metrics
@@ -37,11 +35,6 @@ type Server struct {
 	loginChecks   int
 	debugAttempts map[string]loginWindow
 	lastInference *DebugInferenceResult
-	quotaMu       sync.Mutex
-	quotaCache    map[string]quotaCacheEntry
-	oauthMu       sync.Mutex
-	oauth         map[oauthKey]*oauthAttempt
-	oauthClient   *oauth.Client
 	proxyChecks   chan struct{}
 }
 
@@ -50,7 +43,6 @@ func New(manager *gateway.RuntimeController, monitor *telemetry.Metrics, logs *t
 	return &Server{
 		manager: manager, monitor: monitor, logs: logs, logger: logger, sessions: make(map[string]adminSession),
 		attempts: make(map[string]loginWindow), debugAttempts: make(map[string]loginWindow),
-		oauth: make(map[oauthKey]*oauthAttempt), oauthClient: oauth.NewClient(nil),
 		proxyChecks: make(chan struct{}, 8),
 	}
 }
@@ -77,20 +69,6 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("POST /api/models/restore", a.authenticate(a.csrf(http.HandlerFunc(a.handleRestoreModel))))
 	mux.Handle("POST /api/models/manual", a.authenticate(a.csrf(http.HandlerFunc(a.handleManualModel))))
 	mux.Handle("POST /api/models/probe", a.authenticate(a.csrf(http.HandlerFunc(a.handleProbeModels))))
-	mux.Handle("GET /api/rotation", a.authenticate(http.HandlerFunc(a.handleRotation)))
-	mux.Handle("PUT /api/rotation", a.authenticate(a.csrf(http.HandlerFunc(a.handleSaveRotation))))
-	mux.Handle("POST /api/rotation/current", a.authenticate(a.csrf(http.HandlerFunc(a.handleSelectRotation))))
-	mux.Handle("GET /api/model-quotas", a.authenticate(http.HandlerFunc(a.handleModelQuotas)))
-	mux.Handle("GET /api/go/auth", a.authenticate(http.HandlerFunc(a.handleGoOAuthStatus)))
-	mux.Handle("POST /api/go/auth/start", a.authenticate(a.csrf(http.HandlerFunc(a.handleGoOAuthStart))))
-	mux.Handle("POST /api/go/auth/poll", a.authenticate(a.csrf(http.HandlerFunc(a.handleGoOAuthPoll))))
-	mux.Handle("DELETE /api/go/auth", a.authenticate(a.csrf(http.HandlerFunc(a.handleGoOAuthCancel))))
-	mux.Handle("DELETE /api/go/connection", a.authenticate(a.csrf(http.HandlerFunc(a.handleGoOAuthDisconnect))))
-	mux.Handle("GET /api/zen/auth", a.authenticate(http.HandlerFunc(a.handleZenOAuthStatus)))
-	mux.Handle("POST /api/zen/auth/start", a.authenticate(a.csrf(http.HandlerFunc(a.handleZenOAuthStart))))
-	mux.Handle("POST /api/zen/auth/poll", a.authenticate(a.csrf(http.HandlerFunc(a.handleZenOAuthPoll))))
-	mux.Handle("DELETE /api/zen/auth", a.authenticate(a.csrf(http.HandlerFunc(a.handleZenOAuthCancel))))
-	mux.Handle("DELETE /api/zen/connection", a.authenticate(a.csrf(http.HandlerFunc(a.handleZenOAuthDisconnect))))
 	mux.Handle("GET /api/api-keys", a.authenticate(http.HandlerFunc(a.handleListAPIKeys)))
 	mux.Handle("POST /api/api-keys", a.authenticate(a.csrf(http.HandlerFunc(a.handleCreateAPIKey))))
 	mux.Handle("PATCH /api/api-keys/{id}", a.authenticate(a.csrf(http.HandlerFunc(a.handleUpdateAPIKey))))
@@ -157,9 +135,6 @@ type SecretView struct {
 type ConfigView struct {
 	Listen        string                   `json:"listen"`
 	ServerKeys    []SecretView             `json:"server_keys"`
-	ZenKeys       []SecretView             `json:"zen_keys"`
-	GoKeys        []SecretView             `json:"go_keys"`
-	Anonymous     bool                     `json:"anonymous"`
 	Warp          config.WarpConfig        `json:"warp"`
 	Proxies       []SecretView             `json:"proxies"`
 	ProxyFile     string                   `json:"proxyfile"`
@@ -169,18 +144,17 @@ type ConfigView struct {
 	Models        config.ModelsConfig      `json:"models"`
 	Performance   config.PerformanceConfig `json:"performance"`
 	Logging       config.LoggingConfig     `json:"logging"`
-	Prefer        config.Tier              `json:"prefer"`
 	Reasoning     config.ReasoningConfig   `json:"reasoning"`
 	WebUI         WebUIView                `json:"webui"`
 	Effective     EffectiveView            `json:"effective"`
 	Restart       []string                 `json:"restart_required_fields,omitempty"`
 }
 
-// EffectiveView is the set of listeners the running process actually bound,
-// which may differ from the configured ones until a restart.
+// EffectiveView is the listener the running process actually bound, which may
+// differ from the configured one until a restart, plus whether the WebUI is
+// served on it.
 type EffectiveView struct {
 	Listen       string `json:"listen"`
-	WebUIListen  string `json:"webui_listen"`
 	WebUIEnabled bool   `json:"webui_enabled"`
 }
 
@@ -188,7 +162,6 @@ type EffectiveView struct {
 // its hash are never exposed.
 type WebUIView struct {
 	Enabled           bool   `json:"enabled"`
-	Listen            string `json:"listen"`
 	Username          string `json:"username"`
 	SessionTTLMinutes int    `json:"session_ttl_minutes"`
 }
@@ -206,9 +179,6 @@ type SecretInput struct {
 type ConfigUpdate struct {
 	Listen        string                   `json:"listen"`
 	ServerKeys    []SecretInput            `json:"server_keys"`
-	ZenKeys       []SecretInput            `json:"zen_keys"`
-	GoKeys        []SecretInput            `json:"go_keys"`
-	Anonymous     bool                     `json:"anonymous"`
 	Warp          config.WarpConfig        `json:"warp"`
 	Proxies       []SecretInput            `json:"proxies"`
 	ProxyFile     string                   `json:"proxyfile"`
@@ -218,7 +188,6 @@ type ConfigUpdate struct {
 	Models        config.ModelsConfig      `json:"models"`
 	Performance   config.PerformanceConfig `json:"performance"`
 	Logging       config.LoggingConfig     `json:"logging"`
-	Prefer        config.Tier              `json:"prefer"`
 	// A pointer distinguishes an omitted field (legacy clients should keep the
 	// current reasoning configuration) from an explicit empty object (clear it).
 	Reasoning *config.ReasoningConfig `json:"reasoning,omitempty"`
@@ -247,16 +216,6 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_server_keys", err.Error())
 		return
 	}
-	zenKeys, err := resolveSecrets(update.ZenKeys, current.ZenKeys)
-	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "invalid_zen_keys", err.Error())
-		return
-	}
-	goKeys, err := resolveSecrets(update.GoKeys, current.GoKeys)
-	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "invalid_go_keys", err.Error())
-		return
-	}
 	proxies, err := resolveSecrets(update.Proxies, current.Proxies)
 	if err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_proxies", err.Error())
@@ -270,23 +229,21 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if update.ProxyBindings != nil {
 		proxyBindings = update.ProxyBindings
 	}
+	// The keyless free lane is the only route this build serves, so the
+	// candidate pins anonymous access and keeps no saved credentials.
 	candidate := config.Config{
 		ServerKeyMetadata: current.ServerKeyMetadata,
 		Rotation:          current.Rotation,
-		GoOAuth:           current.GoOAuth,
-		ZenOAuth:          current.ZenOAuth,
-		Listen:            update.Listen, ServerKeys: serverKeys, ZenKeys: zenKeys, GoKeys: goKeys, Anonymous: update.Anonymous, Warp: update.Warp, Proxies: proxies, ProxyFile: update.ProxyFile,
+		Listen:            update.Listen, ServerKeys: serverKeys, Anonymous: true, Warp: update.Warp, Proxies: proxies, ProxyFile: update.ProxyFile,
 		ProxyBindings: proxyBindings,
-		Upstream:      update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: update.Prefer,
+		Upstream:      update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: config.TierZen,
 		Reasoning: reasoning,
-		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
+		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
 	}
 	result, err := a.manager.Update(func(latest *config.Config) error {
 		if !a.sessionValid(sessionID(r), *latest) {
 			return errors.New("management session is no longer active")
 		}
-		candidate.GoOAuth = latest.GoOAuth
-		candidate.ZenOAuth = latest.ZenOAuth
 		candidate.ServerKeyMetadata = latest.ServerKeyMetadata
 		candidate.Rotation = latest.Rotation
 		candidate.WebUI.Username = latest.WebUI.Username
@@ -336,8 +293,8 @@ func (a *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
-// handleReveal returns the plaintext server, Zen, Go and proxy secrets after
-// verifying the current WebUI password, and logs that it happened.
+// handleReveal returns the plaintext server and proxy secrets after verifying
+// the current WebUI password, and logs that it happened.
 func (a *Server) handleReveal(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Password string `json:"password"`
@@ -353,7 +310,7 @@ func (a *Server) handleReveal(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	a.logger.Info("sensitive configuration revealed", "component", "auth", "event", "secrets_revealed", "client_ip", clientIP(r))
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"server_keys": cfg.ServerKeys, "zen_keys": cfg.ZenKeys, "go_keys": cfg.GoKeys, "proxies": cfg.Proxies})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"server_keys": cfg.ServerKeys, "proxies": cfg.Proxies})
 }
 
 // handleMonitor answers with the build version, the metrics snapshot and the
@@ -458,11 +415,11 @@ func (a *Server) configView() ConfigView {
 	upstream.Go = config.RedactURL(upstream.Go)
 	upstream.Anonymous = config.RedactURL(upstream.Anonymous)
 	return ConfigView{
-		Listen: cfg.Listen, ServerKeys: maskSecrets(cfg.ServerKeys, false), ZenKeys: maskSecrets(cfg.ZenKeys, false), GoKeys: maskSecrets(cfg.GoKeys, false), Anonymous: cfg.Anonymous, Warp: cfg.Warp,
+		Listen: cfg.Listen, ServerKeys: maskSecrets(cfg.ServerKeys, false), Warp: cfg.Warp,
 		Proxies: maskSecrets(cfg.Proxies, true), ProxyFile: cfg.ProxyFile, ProxyBindings: proxyBindings, Upstream: upstream, Retry: cfg.Retry, Models: cfg.Models,
-		Performance: cfg.Performance, Logging: cfg.Logging, Prefer: cfg.Prefer, Reasoning: cfg.Reasoning,
-		WebUI:     WebUIView{Enabled: cfg.WebUI.Enabled, Listen: cfg.WebUI.Listen, Username: cfg.WebUI.Username, SessionTTLMinutes: cfg.WebUI.SessionTTLMinutes},
-		Effective: EffectiveView{Listen: effective.API, WebUIListen: effective.WebUI, WebUIEnabled: effective.WebUIEnabled},
+		Performance: cfg.Performance, Logging: cfg.Logging, Reasoning: cfg.Reasoning,
+		WebUI:     WebUIView{Enabled: cfg.WebUI.Enabled, Username: cfg.WebUI.Username, SessionTTLMinutes: cfg.WebUI.SessionTTLMinutes},
+		Effective: EffectiveView{Listen: effective.API, WebUIEnabled: effective.WebUIEnabled},
 		Restart:   restart,
 	}
 }

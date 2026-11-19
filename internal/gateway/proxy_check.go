@@ -53,7 +53,7 @@ func (m *RuntimeController) CheckProxy(parent context.Context, value string) (re
 	defer proxy.bun.CloseIdleConnections()
 	client := proxy.bun
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	target, err := url.Parse(runtime.config.Upstream.Zen)
+	target, err := url.Parse(runtime.config.Upstream.Anonymous)
 	if err != nil || target.Host == "" {
 		result.Reason = "runtime_unavailable"
 		return result
@@ -68,7 +68,7 @@ func (m *RuntimeController) CheckProxy(parent context.Context, value string) (re
 	req.Close = true
 	req.Header.Set("Accept", "application/json")
 	userAgent := httpx.V2UserAgent()
-	if models.IsV1Upstream(runtime.config.Upstream.Zen) {
+	if models.IsV1Upstream(runtime.config.Upstream.Anonymous) {
 		userAgent = httpx.V1UserAgent()
 	}
 	req.Header.Set("User-Agent", userAgent)
