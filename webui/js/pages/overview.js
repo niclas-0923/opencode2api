@@ -23,11 +23,6 @@ function renderChecklist() {
       (config.server_keys || []).length > 0,
     ],
     [
-      t("选择上游通道", "guide.step.upstream"),
-      t("至少有 Zen / Go Key，或启用匿名通道。", "guide.step.upstream.desc"),
-      (config.zen_keys || []).length + (config.go_keys || []).length > 0 || config.anonymous,
-    ],
-    [
       t("检查 Proxy", "guide.step.proxy"),
       t("至少一个代理节点健康，或 WARP 正在承载免费流量。", "guide.step.proxy.desc"),
       (resources.warp?.active || 0) > 0 ||
@@ -71,9 +66,7 @@ function renderResources(resources) {
           text: proxy.healthy ? t("正常", "state.healthy") : t("不可用", "state.unavailable"),
         }),
         el("td", {
-          text: `Z ${proxy.zen_keys} · G ${proxy.go_keys} · A ${
-            proxy.anonymous ? t("开", "common.on") : t("关", "common.off")
-          }`,
+          text: `A ${proxy.anonymous ? t("开", "common.on") : t("关", "common.off")}`,
         }),
       ]),
     );
@@ -96,30 +89,6 @@ function renderResources(resources) {
     );
   }
   if (!proxies.children.length) emptyRow(proxies, 3);
-  const keys = $("#key-table");
-  keys.replaceChildren();
-  if (resources.anonymous) {
-    keys.append(
-      el("tr", {}, [
-        el("td", { text: "anonymous" }),
-        el("td", { text: "zen" }),
-        el("td", { class: "status ok", text: t("已启用", "state.enabled") }),
-      ]),
-    );
-  }
-  (resources.keys || []).forEach((key) => {
-    keys.append(
-      el("tr", {}, [
-        el("td", { text: key.id }),
-        el("td", { text: key.tier }),
-        el("td", {
-          class: `status ${key.cooldown_until ? "warn" : "ok"}`,
-          text: key.cooldown_until ? t("冷却中", "state.cooling") : t("可用", "state.available"),
-        }),
-      ]),
-    );
-  });
-  if (!keys.children.length) emptyRow(keys, 3);
 }
 
 function renderBreakdowns(metrics) {

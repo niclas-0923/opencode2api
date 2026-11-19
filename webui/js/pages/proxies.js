@@ -267,7 +267,7 @@ async function checkRows(targets) {
   refreshControls();
   const accepted = await confirmDialog({
     title: t("确认代理连通性检查", "config.proxy.checkTitle"),
-    message: t("将检查 {0} 条指定代理到 Zen 的连通性，不发送模型推理、不使用上游 Key，也不验证额度。上游拒绝或限流不能证明代理永久损坏。是否继续？", "config.proxy.checkConfirm", targets.length),
+    message: t("将检查 {0} 条指定代理到匿名免费通道的连通性，不发送模型推理，也不验证额度。上游拒绝或限流不能证明代理永久损坏。是否继续？", "config.proxy.checkConfirm", targets.length),
     confirmLabel: t("开始检查", "config.proxy.start"),
   });
   if (run !== active || active.generation !== generation || !hasSession()) return;

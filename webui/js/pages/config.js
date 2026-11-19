@@ -55,11 +55,10 @@ function renderRestartNotice(value) {
   const notice = $("#restart-notice");
   if (value?.restart_required_fields?.length) {
     notice.textContent = t(
-      `已保存但尚未生效：${value.restart_required_fields.join(", ")}。当前 API ${value.effective.listen}、WebUI ${value.effective.webui_listen}。请重启进程。`,
+      `已保存但尚未生效：${value.restart_required_fields.join(", ")}。当前监听 ${value.effective.listen}。请重启进程。`,
       "config.restartNotice",
       value.restart_required_fields.join(", "),
       value.effective.listen,
-      value.effective.webui_listen,
     );
     notice.classList.remove("hidden");
   } else {
@@ -87,19 +86,15 @@ const numberValue = (selector) => Number($(selector).value);
 function fillConfig(value) {
   if (!value) return;
   $("#c-listen").value = value.listen;
-  $("#c-prefer").value = value.prefer;
-  $("#c-web-listen").value = value.webui.listen;
   $("#c-session").value = value.webui.session_ttl_minutes;
   $("#c-web-enabled").checked = value.webui.enabled;
-  $("#c-anonymous").checked = !!value.anonymous;
   const warp = value.warp || {};
   $("#c-warp-enabled").checked = !!warp.enabled;
   $("#c-warp-pool").value = warp.pool_size || 2;
   $("#c-warp-stack").value = warp.stack || "ipv6";
   $("#c-warp-source").value = warp.source_ipv6 || "";
   $("#c-proxyfile").value = value.proxyfile;
-  $("#c-up-zen").value = value.upstream.zen;
-  $("#c-up-go").value = value.upstream.go;
+  $("#c-up-anonymous").value = value.upstream.anonymous;
   $("#c-attempts").value = value.retry.max_attempts;
   $("#c-timeout").value = value.retry.timeout_seconds;
   $("#c-refresh").value = value.models.refresh_seconds;
@@ -120,7 +115,7 @@ function fillConfig(value) {
   $("#c-level").value = value.logging.level;
   $("#c-ring").value = value.logging.ring_size;
   $("#c-dump-bodies").checked = !!value.logging.dump_request_bodies;
-  ["server_keys", "zen_keys", "go_keys"].forEach(renderChips);
+  ["server_keys"].forEach(renderChips);
   fillProxies(value.proxies || []);
   renderRestartNotice(value);
 }
@@ -152,9 +147,6 @@ async function save(event) {
     const update = {
       listen: $("#c-listen").value,
       server_keys: secretInputs("server_keys"),
-      zen_keys: secretInputs("zen_keys"),
-      go_keys: secretInputs("go_keys"),
-      anonymous: $("#c-anonymous").checked,
       warp: {
         enabled: $("#c-warp-enabled").checked,
         pool_size: numberValue("#c-warp-pool"),
@@ -163,8 +155,7 @@ async function save(event) {
       },
       proxies: secretInputs("proxies"),
       proxyfile: $("#c-proxyfile").value,
-      prefer: $("#c-prefer").value,
-      upstream: { ...current.upstream, zen: $("#c-up-zen").value, go: $("#c-up-go").value },
+      upstream: { ...current.upstream, anonymous: $("#c-up-anonymous").value },
       retry: { max_attempts: numberValue("#c-attempts"), timeout_seconds: numberValue("#c-timeout") },
       models: {
         ...current.models,
@@ -195,7 +186,6 @@ async function save(event) {
       },
       webui: {
         enabled: $("#c-web-enabled").checked,
-        listen: $("#c-web-listen").value,
         username: current.webui.username,
         session_ttl_minutes: numberValue("#c-session"),
       },
@@ -207,9 +197,7 @@ async function save(event) {
     fillProxies(result.config.proxies || [], true);
     removedChips.clear();
     store.set("config", result.config);
-    ["server_keys", "zen_keys", "go_keys"].forEach(
-      (name) => ($(`#${name}-new`).value = ""),
-    );
+    $("#server_keys-new").value = "";
     await refreshDebug(operation);
     if (!currentMutation(operation)) return;
     toast(
@@ -327,7 +315,7 @@ export default {
     revealOperation = null;
     removedChips.clear();
     expandedChips.clear();
-    ["server_keys", "zen_keys", "go_keys"].forEach((name) => ($(`#${name}-new`).value = ""));
+    $("#server_keys-new").value = "";
     lockConfig(false);
     resetProxies();
   },

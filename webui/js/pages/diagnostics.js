@@ -48,32 +48,7 @@ function renderKeys() {
   const select = $("#play-key");
   const selected = select.value;
   select.replaceChildren();
-  select.append(el("option", { value: "auto", text: t("自动路由（匿名 / Tier 回退 / Key 轮询）", "playground.key.auto") }));
-  const keys = store.get("debug")?.keys || {};
-  for (const [tier, label] of [
-    ["zen", "Zen Keys"],
-    ["go", "Go Keys"],
-  ]) {
-    const items = keys[tier] || [];
-    if (!items.length) continue;
-    const group = el("optgroup", { label });
-    for (const item of items) {
-      const cooling = item.cooldown_until
-        ? t(
-            ` · 冷却至 ${new Date(item.cooldown_until).toLocaleTimeString(dateLocale(), { hour12: false })}`,
-            "playground.key.cooling",
-            new Date(item.cooldown_until).toLocaleTimeString(dateLocale(), { hour12: false }),
-          )
-        : "";
-      group.append(
-        el("option", {
-          value: `${tier}:${item.id}`,
-          text: `${tier.toUpperCase()} · ${item.display} · ${item.id}${cooling}`,
-        }),
-      );
-    }
-    select.append(group);
-  }
+  select.append(el("option", { value: "auto", text: t("自动路由（匿名通道 · 代理轮换）", "playground.key.auto") }));
   if (selected && [...select.options].some((option) => option.value === selected)) select.value = selected;
   else select.value = "auto";
 }
@@ -161,16 +136,10 @@ async function run(event) {
   const relayValue = $("#play-relay")?.value || "auto";
   const relayNames = store.get("debug")?.relays || [];
   const relay = relayValue === "auto" ? undefined : { index: Number(relayValue), name: relayNames[Number(relayValue)] };
-  const keyValue = $("#play-key").value;
-  const key =
-    keyValue === "auto"
-      ? { mode: "auto" }
-      : { mode: "selected", tier: keyValue.split(":")[0], id: keyValue.split(":").slice(1).join(":") };
+  // The route selector only offers automatic routing in this build.
+  const key = { mode: "auto" };
   $("#play-run").disabled = true;
-  $("#play-state").textContent =
-    key.mode === "selected"
-      ? t("指定 Key 测试进行中…", "play.state.testingKey")
-      : t("Gateway 请求进行中…", "play.state.running");
+  $("#play-state").textContent = t("Gateway 请求进行中…", "play.state.running");
   try {
     store.set(
       "lastPlayground",
