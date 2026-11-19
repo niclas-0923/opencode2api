@@ -393,6 +393,18 @@ func peerTrusted(peer string, trustedProxies []string) bool {
 	return false
 }
 
+// requestClaimsHTTPS reports whether the request arrived over TLS or carried
+// X-Forwarded-Proto: https. Unlike requestIsSecure it does not consult the
+// trusted proxies: browsers ignore HSTS on plain HTTP responses, so the
+// header does not need the stricter check that cookie flags and the CSRF
+// origin scheme comparison use.
+func requestClaimsHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
 // peerHost strips the port from a RemoteAddr or X-Forwarded-For entry.
 func peerHost(address string) string {
 	if host, _, err := net.SplitHostPort(address); err == nil {

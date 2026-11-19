@@ -530,6 +530,9 @@ func Normalize(path string, cfg Config) (Config, error) {
 			return Config{}, errors.New("webui.session_ttl_minutes must be between 5 and 10080")
 		}
 	}
+	if len(cfg.WebUI.TrustedProxies) > 16 {
+		return Config{}, errors.New("webui.trusted_proxies must contain at most 16 entries")
+	}
 	for i, entry := range cfg.WebUI.TrustedProxies {
 		cfg.WebUI.TrustedProxies[i] = strings.TrimSpace(entry)
 		if err := validateTrustedProxy(cfg.WebUI.TrustedProxies[i]); err != nil {

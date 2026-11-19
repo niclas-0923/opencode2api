@@ -71,3 +71,20 @@ func TestRequestIsSecureFor(t *testing.T) {
 		t.Fatal("direct TLS is secure")
 	}
 }
+
+func TestRequestClaimsHTTPS(t *testing.T) {
+	if !requestClaimsHTTPS(request(t, "203.0.113.9:5555", map[string]string{"X-Forwarded-Proto": "https"})) {
+		t.Fatal("claimed https is enough for the HSTS header")
+	}
+	if requestClaimsHTTPS(request(t, "203.0.113.9:5555", nil)) {
+		t.Fatal("plain request does not claim https")
+	}
+	if requestClaimsHTTPS(nil) {
+		t.Fatal("nil request does not claim https")
+	}
+	r := request(t, "203.0.113.9:5555", nil)
+	r.TLS = &tls.ConnectionState{}
+	if !requestClaimsHTTPS(r) {
+		t.Fatal("direct TLS claims https")
+	}
+}
