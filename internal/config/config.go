@@ -269,6 +269,32 @@ type WebUIConfig struct {
 	Password          string `json:"password,omitempty"`
 	PasswordHash      string `json:"password_hash,omitempty"`
 	SessionTTLMinutes int    `json:"session_ttl_minutes"`
+	// TrustedProxies lists the addresses (IP or CIDR) of the reverse proxies
+	// allowed to speak for the real client. For a request whose direct peer
+	// matches an entry, the rightmost X-Forwarded-For address, the one the
+	// trusted proxy appended, identifies the client behind the login and
+	// Playground rate limits, and X-Forwarded-Proto is honored for the cookie
+	// Secure flag and the CSRF origin check. Leave it empty when clients
+	// connect directly.
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+}
+
+// validateTrustedProxy accepts an IP address or a CIDR range.
+func validateTrustedProxy(entry string) error {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return errors.New("webui.trusted_proxies entries must not be empty")
+	}
+	if strings.Contains(entry, "/") {
+		if _, err := netip.ParsePrefix(entry); err != nil {
+			return fmt.Errorf("webui.trusted_proxies entry %q is not a CIDR range", entry)
+		}
+		return nil
+	}
+	if _, err := netip.ParseAddr(entry); err != nil {
+		return fmt.Errorf("webui.trusted_proxies entry %q is not an IP address", entry)
+	}
+	return nil
 }
 
 // PerformanceConfig tunes the shared upstream transports and failure
@@ -502,6 +528,12 @@ func Normalize(path string, cfg Config) (Config, error) {
 		}
 		if cfg.WebUI.SessionTTLMinutes < 5 || cfg.WebUI.SessionTTLMinutes > 10080 {
 			return Config{}, errors.New("webui.session_ttl_minutes must be between 5 and 10080")
+		}
+	}
+	for i, entry := range cfg.WebUI.TrustedProxies {
+		cfg.WebUI.TrustedProxies[i] = strings.TrimSpace(entry)
+		if err := validateTrustedProxy(cfg.WebUI.TrustedProxies[i]); err != nil {
+			return Config{}, err
 		}
 	}
 	for _, raw := range cfg.RuntimeProxies() {

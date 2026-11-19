@@ -43,7 +43,7 @@ type loginWindow struct {
 // password hash, creates a session and its CSRF token, and sets the session
 // cookie. A successful login clears that client's failure window.
 func (a *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	client := clientIP(r)
+	client := a.clientIP(r)
 	var input struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -84,7 +84,7 @@ func (a *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	a.sessions[tokenDigest(token)] = adminSession{Username: cfg.WebUI.Username, AuthVersion: config.Fingerprint(cfg.WebUI.PasswordHash), CSRF: csrf, Expires: expires}
 	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: requestIsSecure(r)})
+	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: a.requestIsSecure(r)})
 	w.Header().Set("Cache-Control", "no-store")
 	a.logger.Info("admin login succeeded", "component", "auth", "event", "login_succeeded", "client_ip", client)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"username": cfg.WebUI.Username, "csrf_token": csrf, "expires_at": expires.UTC()})
@@ -107,7 +107,7 @@ func (a *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		delete(a.sessions, tokenDigest(cookie.Value))
 		a.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: requestIsSecure(r)})
+	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: a.requestIsSecure(r)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -165,7 +165,7 @@ func (a *Server) csrf(next http.Handler) http.Handler {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			parsed, err := url.Parse(origin)
 			expectedScheme := "http"
-			if requestIsSecure(r) {
+			if a.requestIsSecure(r) {
 				expectedScheme = "https"
 			}
 			if err != nil || !strings.EqualFold(parsed.Host, r.Host) || !strings.EqualFold(parsed.Scheme, expectedScheme) {
@@ -214,8 +214,8 @@ func (a *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.sessions = make(map[string]adminSession)
 	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: requestIsSecure(r)})
-	a.logger.Info("admin account updated", "component", "auth", "event", "account_updated", "client_ip", clientIP(r))
+	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: a.requestIsSecure(r)})
+	a.logger.Info("admin account updated", "component", "auth", "event", "account_updated", "client_ip", a.clientIP(r))
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"updated": true, "reauthenticate": true})
 }
 
@@ -332,25 +332,90 @@ func (a *Server) sessionValid(id string, cfg config.Config) bool {
 	return ok && time.Now().Before(session.Expires) && session.Username == cfg.WebUI.Username && session.AuthVersion == config.Fingerprint(cfg.WebUI.PasswordHash)
 }
 
-// clientIP returns the IP address of the direct peer, without the port. It
-// deliberately ignores X-Forwarded-For: the header is client-controlled, so
-// trusting it would let anyone escape the login and Playground rate limits by
-// rotating a value. Behind a reverse proxy every client therefore shares the
-// proxy's address.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
+// clientIP returns the address the login and Playground rate limits and the
+// logs attribute a request to. It is the direct peer's address, without the
+// port, unless the peer is a configured trusted proxy (webui.trusted_proxies):
+// then the rightmost X-Forwarded-For entry, the address the trusted proxy
+// appended for the client it saw, identifies the client. Entries the client
+// sent itself are never used, so a forged header cannot rotate a rate-limit
+// window through the proxy.
+func (a *Server) clientIP(r *http.Request) string {
+	return clientIPFor(r, a.manager.Config().WebUI.TrustedProxies)
 }
 
 // requestIsSecure reports whether the browser reached the server over TLS,
-// directly or, for the cookie's Secure flag and the CSRF origin check, through
-// a proxy that sets X-Forwarded-Proto to https.
-func requestIsSecure(r *http.Request) bool {
+// directly or through a trusted proxy that set X-Forwarded-Proto to https.
+func (a *Server) requestIsSecure(r *http.Request) bool {
+	return requestIsSecureFor(r, a.manager.Config().WebUI.TrustedProxies)
+}
+
+// clientIPFor is clientIP for an explicit trusted-proxy set, so the identity
+// resolution is testable without a runtime.
+func clientIPFor(r *http.Request, trustedProxies []string) string {
+	peer := peerHost(r.RemoteAddr)
+	if !peerTrusted(peer, trustedProxies) {
+		return peer
+	}
+	forwarded := ""
+	for _, header := range r.Header.Values("X-Forwarded-For") {
+		for _, entry := range strings.Split(header, ",") {
+			if trimmed := strings.TrimSpace(entry); trimmed != "" {
+				forwarded = trimmed
+			}
+		}
+	}
+	if forwarded != "" {
+		if host := peerHost(forwarded); net.ParseIP(host) != nil {
+			return host
+		}
+	}
+	return peer
+}
+
+// peerTrusted reports whether peer appears in trustedProxies as an IP address
+// or a CIDR range.
+func peerTrusted(peer string, trustedProxies []string) bool {
+	ip := net.ParseIP(peer)
+	if ip == nil {
+		return false
+	}
+	for _, entry := range trustedProxies {
+		if _, network, err := net.ParseCIDR(entry); err == nil {
+			if network.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if candidate := net.ParseIP(strings.Trim(entry, "[]")); candidate != nil && candidate.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// peerHost strips the port from a RemoteAddr or X-Forwarded-For entry.
+func peerHost(address string) string {
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		return host
+	}
+	return address
+}
+
+// requestIsSecureFor reports whether the browser reached the server over TLS,
+// directly or, for the cookie's Secure flag and the CSRF origin check,
+// through a proxy that set X-Forwarded-Proto to https. With trusted proxies
+// configured, only a trusted peer's header is honored; with none configured
+// the header is honored as before, for a listener that already sits behind a
+// local proxy or accepts only loopback traffic.
+func requestIsSecureFor(r *http.Request, trustedProxies []string) bool {
 	if r == nil {
 		return false
 	}
-	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+	if r.TLS != nil {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return false
+	}
+	return len(trustedProxies) == 0 || peerTrusted(peerHost(r.RemoteAddr), trustedProxies)
 }

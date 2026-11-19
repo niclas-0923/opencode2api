@@ -68,7 +68,7 @@ Log: `GET /api/logs?after=SEQ&limit=N` và `GET /api/logs/stream` (SSE, hỗ tr�
 
 `GET /healthz` cùng cổng, không cần xác thực; 503 khi danh mục trống/chưa sẵn sàng, WARP không có lối ra hoặc proxy bắt buộc không khỏe. Dữ liệu nhạy cảm: `config.json`, `config.json.bak`, tệp `*.availability.json`; phiên, log và thống kê nằm trong bộ nhớ và mất khi khởi động lại.
 
-Chỉ dùng loopback khi chạy cục bộ; truy cập mạng cần HTTPS và giới hạn. Không gửi kèm cấu hình, cookie hay nội dung suy luận thật khi báo lỗi.
+Chỉ dùng loopback khi chạy cục bộ; truy cập mạng cần HTTPS và giới hạn. Khi đưa lên sau reverse proxy, liệt kê địa chỉ proxy trong `webui.trusted_proxies` (IP hoặc CIDR) để rate limit dùng IP thật của client (mục `X-Forwarded-For` bên phải nhất) và chỉ chấp nhận `X-Forwarded-Proto` từ proxy đó. Không gửi kèm cấu hình, cookie hay nội dung suy luận thật khi báo lỗi.
 
 ## Kiểm tra
 

@@ -46,7 +46,12 @@
     "enabled": true,
     "username": "admin",
     "password": "change-this-admin-password",
-    "session_ttl_minutes": 720
+    "session_ttl_minutes": 720,
+    // Peer addresses (IP or CIDR) of reverse proxies allowed to speak for the
+    // real client: the rightmost X-Forwarded-For entry becomes the client
+    // identity behind rate limits, and X-Forwarded-Proto is honored. Set this
+    // to the address your proxy connects from; remove it for direct access.
+    "trusted_proxies": ["127.0.0.1"]
   },
   "reasoning": {
     "effort": "high",

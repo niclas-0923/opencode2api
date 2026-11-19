@@ -68,7 +68,7 @@ Log: `GET /api/logs?after=SEQ&limit=N` e `GET /api/logs/stream` (SSE con `Last-E
 
 `GET /healthz` usa la stessa porta e non richiede autenticazione; 503 con catalogo vuoto/non pronto, WARP senza uscite o proxy richiesti non sani. Dati sensibili: `config.json`, `config.json.bak`, `*.availability.json`; sessioni, log e statistiche vivono in memoria e si azzerano al riavvio.
 
-Usa loopback in locale; l'accesso di rete richiede HTTPS e restrizioni. Non allegare configurazione, cookie o contenuti di inferenza reali nelle segnalazioni.
+Usa loopback in locale; l'accesso di rete richiede HTTPS e restrizioni. Se pubblichi il servizio dietro un reverse proxy, elenca l'indirizzo del proxy in `webui.trusted_proxies` (IP o CIDR): i rate limit useranno l'IP reale del client (la voce più a destra di `X-Forwarded-For`) e `X-Forwarded-Proto` sarà accettato solo da quel proxy. Non allegare configurazione, cookie o contenuti di inferenza reali nelle segnalazioni.
 
 ## Verifica
 

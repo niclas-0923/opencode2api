@@ -117,6 +117,10 @@ func (a *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		if a.requestIsSecure(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -238,7 +242,7 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		ProxyBindings: proxyBindings,
 		Upstream:      update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: config.TierZen,
 		Reasoning: reasoning,
-		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
+		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes, TrustedProxies: current.WebUI.TrustedProxies},
 	}
 	result, err := a.manager.Update(func(latest *config.Config) error {
 		if !a.sessionValid(sessionID(r), *latest) {
@@ -248,6 +252,7 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		candidate.Rotation = latest.Rotation
 		candidate.WebUI.Username = latest.WebUI.Username
 		candidate.WebUI.PasswordHash = latest.WebUI.PasswordHash
+		candidate.WebUI.TrustedProxies = latest.WebUI.TrustedProxies
 		if update.Reasoning == nil {
 			candidate.Reasoning = latest.Reasoning
 		}
@@ -309,7 +314,7 @@ func (a *Server) handleReveal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	a.logger.Info("sensitive configuration revealed", "component", "auth", "event", "secrets_revealed", "client_ip", clientIP(r))
+	a.logger.Info("sensitive configuration revealed", "component", "auth", "event", "secrets_revealed", "client_ip", a.clientIP(r))
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"server_keys": cfg.ServerKeys, "proxies": cfg.Proxies})
 }
 

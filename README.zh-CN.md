@@ -253,7 +253,7 @@ API Key 页面支持创建、命名、启用、停用、删除。自动 Key 使�
 
 `GET /healthz` 不发送上游请求、无需 Key。目录未就绪/为空、WARP 不可用或必要代理全部不健康时返回 503。可用但过期目录可返回 200 及 `status: "degraded"`；过期阈值为两倍刷新间隔，最低 60 秒。就绪不保证 Key 有效、额度充足或推理成功；公开响应只含计数与状态，不含凭证或代理地址。
 
-本地使用将 8080 监听在 loopback。网络访问须使用 HTTPS 并限制管理入口；可信反向代理应正确设置 `X-Forwarded-Proto`。限流使用直连对端地址，同一反向代理后的客户端共享限制。可执行文件本身提供 HTTP。
+本地使用将 8080 监听在 loopback。网络访问须使用 HTTPS 并限制管理入口。反向代理须透传原始 Host 头并将 `X-Forwarded-Proto` 设为 `https`；将代理接入地址列入 `webui.trusted_proxies`（IP 或 CIDR）后，`X-Forwarded-For` 最右侧地址成为各客户端在登录与 Playground 限流下的身份，且仅受信代理的 `X-Forwarded-Proto` 会被采纳，代理须自行设置或追加该头而不是原样透传客户端的值。不设置该配置时限流使用直连对端地址，同一反向代理后的客户端共享限制。可执行文件本身提供 HTTP；安全的管理响应会携带 HSTS 与 `X-Robots-Tag: noindex`。
 
 配置和备份包含代理密码与本地 Key 值，密码哈希不加密这些内容。限制文件权限，Windows 使用 ACL，分享源码时排除运行文件。`logging.dump_request_bodies` 默认关闭且需 debug 才输出，即使截断与脱敏仍可能暴露对话内容。Playground 和主动可用性探测会发送真实上游请求，可能消耗额度或 credits。
 
