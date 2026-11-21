@@ -61,13 +61,38 @@ type healthWarp struct {
 	Cooling int    `json:"cooling"`
 }
 
-// handleHealth reports readiness. It answers 503 while the model catalog is
-// pending or empty, while WARP is enabled but no exit is active, or while no
-// proxy is healthy when free traffic cannot leave through WARP (WARP off, or Go
-// keys configured). Any issue, including a stale catalog or no upstream
-// credentials, marks the status degraded, except that a pending catalog reports
-// starting.
-func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
+// healthSummary is the unauthenticated health document: just enough for a
+// load balancer or container probe to decide readiness, without exposing the
+// model catalog, credential counts, proxy health or WARP topology.
+type healthSummary struct {
+	Status string `json:"status"`
+	Ready  bool   `json:"ready"`
+}
+
+// handleHealth reports readiness. The full document requires a valid server
+// key; without one it degrades to the status/ready summary so an
+// unauthenticated caller cannot map the deployment's internals. It answers 503
+// while the model catalog is pending or empty, while WARP is enabled but no
+// exit is active, or while no proxy is healthy when free traffic cannot leave
+// through WARP (WARP off, or Go keys configured). Any issue, including a stale
+// catalog or no upstream credentials, marks the status degraded, except that a
+// pending catalog reports starting.
+func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// The full document exposes deployment topology. no-store keeps shared
+	// caches from replaying an authenticated response to another caller.
+	w.Header().Set("Cache-Control", "no-store")
+	response, httpStatus := g.healthSnapshot()
+	candidates, ambiguous := credentialCandidates(r)
+	if ambiguous || g.serverKeyMatches(candidates) == "" {
+		httpx.WriteJSON(w, httpStatus, healthSummary{Status: response.Status, Ready: response.Ready})
+		return
+	}
+	httpx.WriteJSON(w, httpStatus, response)
+}
+
+// healthSnapshot computes the health document and the HTTP status it should be
+// served with.
+func (g *Gateway) healthSnapshot() (healthResponse, int) {
 	_, models := g.availableModels()
 	proxyTotal, proxyHealthy := g.transports.healthCounts()
 	zenKeys, goKeys := g.zenNodes.Len(), g.goNodes.Len()
@@ -147,7 +172,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			status = "starting"
 		}
 	}
-	httpx.WriteJSON(w, httpStatus, healthResponse{
+	return healthResponse{
 		Status:  status,
 		Ready:   ready,
 		Version: buildinfo.Version,
@@ -170,7 +195,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		},
 		Warp:   warpStatus,
 		Issues: issues,
-	})
+	}, httpStatus
 }
 
 func (g *Gateway) availableModels() ([]modelcatalog.Route, modelcatalog.CatalogSnapshot) {
