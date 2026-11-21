@@ -1413,6 +1413,24 @@ export const t = (original, key, ...args) => {
   return interpolate(value === undefined ? original : value, args);
 };
 
+// renderTranslation replaces a node's content with an authored translation.
+// Dictionary values are data, not markup: only <code> is rendered as an
+// element, so a compromised dictionary cannot inject scripts or handlers.
+const renderTranslation = (node, value) => {
+  node.replaceChildren();
+  let code = null;
+  for (const part of String(value).split(/(<code>|<\/code>)/i)) {
+    if (/^<code>$/i.test(part)) {
+      code = document.createElement("code");
+      node.append(code);
+    } else if (/^<\/code>$/i.test(part)) {
+      code = null;
+    } else if (part !== "") {
+      (code || node).append(document.createTextNode(part));
+    }
+  }
+};
+
 // apply re-renders every node carrying a static translation attribute. Any
 // node created after a language switch is picked up by the next apply() call.
 export const apply = (root = document) => {
@@ -1420,7 +1438,7 @@ export const apply = (root = document) => {
   root.querySelectorAll("[data-i18n]").forEach((node) => {
     if (!originals.has(node)) originals.set(node, node.innerHTML);
     const value = dictionary[node.dataset.i18n];
-    node.innerHTML = value === undefined ? originals.get(node) : value;
+    renderTranslation(node, value === undefined ? originals.get(node) : value);
   });
   root.querySelectorAll("[data-i18n-attr]").forEach((node) => {
     const targets = node.dataset.i18nAttr.split(",").map((pair) => pair.trim().split(":"));
