@@ -179,9 +179,10 @@ func (g *Gateway) doUpstream(ctx context.Context, route models.Route, bodies map
 	// records, and the snippet is scrubbed of configured secrets before it is
 	// logged.
 	if len(errBody) > 0 {
-		redactor := config.SecretRedactor()
-		redactor.Replace(g.cfg)
-		snippet := redactor.String(string(errBody))
+		// Reuse the gateway redactor rather than building one per response:
+		// it already tracks the live config and is replaced atomically on
+		// update, so it also scrubs secrets added after startup.
+		snippet := g.redactor.String(string(errBody))
 		if len(snippet) > 240 {
 			snippet = snippet[:240]
 		}

@@ -713,7 +713,7 @@ func nodePool(keys []string, transports *proxyTransports, cooldown time.Duration
 				idx, ok = proxyMap[cleanTarget]
 			}
 			if !ok {
-				return nil, fmt.Errorf("bound proxy %q for key %s not found in transports", targetProxy, config.KeyDisplayID(key))
+				return nil, fmt.Errorf("bound proxy %q for key %s not found in transports", config.RedactURL(targetProxy), config.KeyDisplayID(key))
 			}
 			proxyIndex = idx
 			bound = true
