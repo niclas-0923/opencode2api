@@ -10,6 +10,26 @@ import (
 	"runtime"
 )
 
+// TightenFilePermissions removes group and other access from path when the
+// platform's mode bits describe file access, preserving the owner's read/write
+// bits. It returns the mode observed before the change and whether it was
+// narrowed. On Windows mode bits do not describe the ACL, so the file is left
+// untouched and the caller should warn that the ACL was not inspected.
+func TightenFilePermissions(path string) (os.FileMode, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false, err
+	}
+	before := info.Mode().Perm()
+	if before&0077 == 0 || runtime.GOOS == "windows" {
+		return before, false, nil
+	}
+	if err := os.Chmod(path, before&0600); err != nil {
+		return before, false, err
+	}
+	return before, true, nil
+}
+
 // SaveAtomic writes cfg to path as indented JSON. The unexported runtime proxy
 // list is never encoded. It does not normalize cfg; callers pass a
 // config that Normalize already accepted. An existing file is kept as
@@ -17,8 +37,8 @@ import (
 //
 // The data is written and synced to a temporary file created beside the
 // target, so the final rename stays on the same filesystem; the temporary
-// file takes over the existing file's permission bits. Outside Windows the
-// backup is a copy and the rename replaces path atomically. On Windows a
+// file keeps the existing owner with group/other bits cleared. Outside Windows
+// the backup is a copy and the rename replaces path atomically. On Windows a
 // complete backup copy is installed before the original is staged and the
 // replacement is renamed into place. If the replacement fails, the original
 // is restored and both replacement and rollback errors are returned.
@@ -46,7 +66,9 @@ func SaveAtomic(path string, cfg Config) error {
 		return fmt.Errorf("write temporary config: %w", err)
 	}
 	if info, statErr := os.Stat(path); statErr == nil {
-		if err := os.Chmod(tempPath, info.Mode().Perm()); err != nil {
+		// Keep the existing owner, but never carry group/other bits onto a
+		// file that holds server keys, proxy passwords and OAuth state.
+		if err := os.Chmod(tempPath, info.Mode().Perm()&0600); err != nil {
 			return fmt.Errorf("set temporary config permissions: %w", err)
 		}
 	} else if !os.IsNotExist(statErr) {
@@ -164,8 +186,10 @@ func restoreConfigBackup(source, target string) error {
 	return nil
 }
 
-// copyFile copies source to target, truncating target, and preserves source's
-// permission bits. The copy is synced before target is closed.
+// copyFile copies source to target, truncating target. The copy is created
+// owner-only (0600) and then synced before target is closed: a backup holds
+// the same credentials as the config itself, so it must never inherit a
+// looser mode from the source file.
 func copyFile(source, target string) error {
 	in, err := os.Open(source)
 	if err != nil {
@@ -173,14 +197,14 @@ func copyFile(source, target string) error {
 	}
 	defer in.Close()
 	mode := os.FileMode(0600)
-	if info, statErr := in.Stat(); statErr == nil {
-		mode = info.Mode().Perm()
-	}
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
-	_ = out.Chmod(mode)
+	if err := out.Chmod(mode); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("set backup permissions: %w", err)
+	}
 	_, copyErr := io.Copy(out, in)
 	syncErr := out.Sync()
 	closeErr := out.Close()
