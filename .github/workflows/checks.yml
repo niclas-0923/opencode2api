@@ -30,6 +30,14 @@ jobs:
           cache: true
       - name: Vet
         run: go vet ./...
+      - name: Test
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            go test ./... -race -count=1
+          else
+            go test ./... -count=1
+          fi
       - name: Build
         run: go build -trimpath ./cmd/opencode2api
 
@@ -60,3 +68,18 @@ jobs:
           done
       - name: Check container entrypoint syntax
         run: sh -n docker-entrypoint.sh
+
+  security:
+    name: Dependencies and vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify module downloads
+        run: go mod verify
+      - name: Scan for known vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          "$(go env GOPATH)/bin/govulncheck" ./...

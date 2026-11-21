@@ -10,6 +10,7 @@ opencode/
 .tmp/
 .gocache/
 .gomod/
+.gomodcache/
 .gotmp/
 *.models.catalog.json
 coverage.out
