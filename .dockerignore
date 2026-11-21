@@ -1,3 +1,5 @@
+# The build context is allow-listed by top-level path. When a new top-level
+# directory must reach the image, add both "!<dir>/" and "!<dir>/**" here.
 *
 !cmd/
 !cmd/**

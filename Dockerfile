@@ -44,7 +44,17 @@ WORKDIR /app
 
 EXPOSE 8080
 
+# Probe the address the entrypoint was told to bind. When LISTEN_ADDRESS is
+# unset, config.json is authoritative and the seeded config binds 0.0.0.0:8080,
+# so the probe uses loopback; override with LISTEN_ADDRESS when the file binds
+# another port.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+    CMD probe="${LISTEN_ADDRESS:-127.0.0.1:8080}"; \
+        case "$probe" in \
+            0.0.0.0:*) probe="127.0.0.1:${probe#0.0.0.0:}" ;; \
+            \[::\]:*) probe="[::1]:${probe#\[::\]:}" ;; \
+            :*) probe="127.0.0.1${probe}" ;; \
+        esac; \
+        wget -q -O /dev/null "http://${probe}/healthz" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]
