@@ -324,6 +324,17 @@ type PerformanceConfig struct {
 	// abusive stays out of the anonymous cursor. Upstream does not publish
 	// the block duration, so the default is a conservative 15 minutes.
 	FreeTierBlockSeconds int `json:"free_tier_block_seconds"`
+	// MaxInflight bounds concurrent inference requests across all clients.
+	// A request over the limit is refused with 429 instead of queueing, so
+	// a burst cannot accumulate bodies in memory. Zero uses the default 32.
+	MaxInflight int `json:"max_inflight"`
+	// MaxRequestBytes caps an inference request body. Zero uses the default
+	// 4 MiB; values outside [64 KiB, 32 MiB] are rejected.
+	MaxRequestBytes int `json:"max_request_bytes"`
+	// MaxAttachmentBytes caps a request body on the attachment-bearing
+	// /v1/responses route. Zero uses the default 16 MiB; the same range
+	// applies.
+	MaxAttachmentBytes int `json:"max_attachment_bytes"`
 }
 
 // AttemptTimeout returns the bound for a single upstream attempt. When
@@ -508,6 +519,24 @@ func Normalize(path string, cfg Config) (Config, error) {
 	}
 	if cfg.Performance.FreeTierBlockSeconds < 0 {
 		return Config{}, errors.New("performance.free_tier_block_seconds must not be negative (0 uses the built-in cool-down)")
+	}
+	if cfg.Performance.MaxInflight == 0 {
+		cfg.Performance.MaxInflight = 32
+	}
+	if cfg.Performance.MaxInflight < 1 || cfg.Performance.MaxInflight > 4096 {
+		return Config{}, errors.New("performance.max_inflight must be between 1 and 4096 (0 uses the default 32)")
+	}
+	if cfg.Performance.MaxRequestBytes == 0 {
+		cfg.Performance.MaxRequestBytes = 4 << 20
+	}
+	if cfg.Performance.MaxRequestBytes < 64<<10 || cfg.Performance.MaxRequestBytes > 32<<20 {
+		return Config{}, errors.New("performance.max_request_bytes must be between 65536 and 33554432 (0 uses the default 4 MiB)")
+	}
+	if cfg.Performance.MaxAttachmentBytes == 0 {
+		cfg.Performance.MaxAttachmentBytes = 16 << 20
+	}
+	if cfg.Performance.MaxAttachmentBytes < 64<<10 || cfg.Performance.MaxAttachmentBytes > 32<<20 {
+		return Config{}, errors.New("performance.max_attachment_bytes must be between 65536 and 33554432 (0 uses the default 16 MiB)")
 	}
 	if cfg.Logging.Level != "debug" && cfg.Logging.Level != "info" && cfg.Logging.Level != "warn" && cfg.Logging.Level != "error" {
 		return Config{}, errors.New("logging.level must be debug, info, warn, or error")

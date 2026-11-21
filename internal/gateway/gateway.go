@@ -38,7 +38,12 @@ import (
 	"opencode2api/internal/warp"
 )
 
-const maxRequestBody = 32 << 20
+// Built-in body limits used when the configuration leaves the values at
+// zero (for example a Gateway built directly in a test).
+const (
+	defaultMaxRequestBody     = 4 << 20
+	defaultMaxAttachmentBytes = 16 << 20
+)
 
 // anonymousZenKey is the shared credential the anonymous free tier sends as
 // its API key.
@@ -53,6 +58,67 @@ func attemptDeadline(cfg config.Config) time.Duration {
 		return 0
 	}
 	return cfg.Performance.AttemptTimeout(time.Duration(cfg.Retry.TimeoutSeconds) * time.Second)
+}
+
+// bodyLimit resolves a configured body limit, falling back to the built-in
+// default when the value is unset.
+func bodyLimit(configured, fallback int) int64 {
+	if configured > 0 {
+		return int64(configured)
+	}
+	return int64(fallback)
+}
+
+// maxBodyBytes returns the request body cap for path. Attachment-bearing
+// Responses requests get their own, larger limit.
+func (g *Gateway) maxBodyBytes(path string) int64 {
+	if path == "/v1/responses" {
+		if g.maxAttachmentBytes > 0 {
+			return g.maxAttachmentBytes
+		}
+		return defaultMaxAttachmentBytes
+	}
+	if g.maxRequestBytes > 0 {
+		return g.maxRequestBytes
+	}
+	return defaultMaxRequestBody
+}
+
+// writeBodyError reports an oversized request body as 413 and an unreadable
+// one as 400. Collapsing both into 400 hides the size cap from clients that
+// distinguish them.
+func writeBodyError(w http.ResponseWriter, protocol wire.Protocol, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		wire.WriteError(w, protocol, http.StatusRequestEntityTooLarge, "request body is too large", "invalid_request_error", "")
+		return
+	}
+	wire.WriteError(w, protocol, http.StatusBadRequest, "request body is unreadable", "invalid_request_error", "")
+}
+
+// limitInflight rejects a request while max_inflight requests are already in
+// flight. It refuses instead of queueing: a queue would keep the request body
+// in memory, which is what the limit is meant to bound.
+func (g *Gateway) limitInflight(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if g.inflight == nil {
+			next(w, r)
+			return
+		}
+		select {
+		case g.inflight <- struct{}{}:
+			defer func() { <-g.inflight }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			protocol := wire.Chat
+			if r.URL.Path == "/v1/messages" {
+				protocol = wire.Anthropic
+			}
+			wire.WriteError(w, protocol, http.StatusTooManyRequests, "too many concurrent requests; retry shortly", "rate_limited", "")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // statusClientClosedRequest is nginx's 499: the client went away before the
@@ -95,6 +161,13 @@ type Gateway struct {
 	// freeTierBlock is how long an exit the free tier flagged stays out of the
 	// anonymous cursor. Zero uses freeTierBlockTTL.
 	freeTierBlock time.Duration
+	// inflight bounds concurrent inference requests; a request that finds it
+	// full is rejected with 429 instead of queueing.
+	inflight chan struct{}
+	// maxRequestBytes and maxAttachmentBytes cap request bodies; the
+	// attachment limit applies to /v1/responses.
+	maxRequestBytes    int64
+	maxAttachmentBytes int64
 	// refreshMu prevents overlapping catalog refreshes across concurrent or scheduled callers.
 	refreshMu              sync.Mutex
 	resolveGoOAuth         func(context.Context) (*oauth.Connection, error)
@@ -143,20 +216,27 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 	catalog.SetFreeOnly(cfg.Models.FreeOnly)
 	redactor := config.SecretRedactor()
 	redactor.Replace(cfg)
+	inflightLimit := cfg.Performance.MaxInflight
+	if inflightLimit <= 0 {
+		inflightLimit = 32
+	}
 	gateway := &Gateway{
-		cfg:            cfg,
-		rotation:       rotationManager,
-		logger:         logger,
-		redactor:       redactor,
-		transports:     transports,
-		zenNodes:       zenNodes,
-		goNodes:        goNodes,
-		anonymous:      anonymousPool(cfg.Anonymous, transports, cooldown, anonymousBackoffFromConfig(cfg.Models.AnonymousBackoff)),
-		warp:           warpPool,
-		catalog:        catalog,
-		monitor:        monitor,
-		attemptTimeout: attemptDeadline(cfg),
-		freeTierBlock:  time.Duration(cfg.Performance.FreeTierBlockSeconds) * time.Second,
+		cfg:                cfg,
+		rotation:           rotationManager,
+		logger:             logger,
+		redactor:           redactor,
+		transports:         transports,
+		zenNodes:           zenNodes,
+		goNodes:            goNodes,
+		anonymous:          anonymousPool(cfg.Anonymous, transports, cooldown, anonymousBackoffFromConfig(cfg.Models.AnonymousBackoff)),
+		warp:               warpPool,
+		catalog:            catalog,
+		monitor:            monitor,
+		attemptTimeout:     attemptDeadline(cfg),
+		freeTierBlock:      time.Duration(cfg.Performance.FreeTierBlockSeconds) * time.Second,
+		inflight:           make(chan struct{}, inflightLimit),
+		maxRequestBytes:    bodyLimit(cfg.Performance.MaxRequestBytes, defaultMaxRequestBody),
+		maxAttachmentBytes: bodyLimit(cfg.Performance.MaxAttachmentBytes, defaultMaxAttachmentBytes),
 	}
 	gateway.restoreOAuthCatalog()
 	return gateway, nil
@@ -181,12 +261,53 @@ func anonymousBackoffFromConfig(cfg *config.AnonymousBackoffConfig) anonymousBac
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", g.authenticate(g.handleModels))
-	mux.HandleFunc("POST /v1/chat/completions", g.authenticate(g.handleInference(wire.Chat)))
-	mux.HandleFunc("POST /v1/responses", g.authenticate(g.handleInference(wire.Responses)))
-	mux.HandleFunc("POST /v1/messages", g.authenticate(g.handleInference(wire.Anthropic)))
-	mux.HandleFunc("POST /v1/systemone", g.authenticate(g.handleSystemOne))
+	mux.HandleFunc("POST /v1/chat/completions", g.authenticate(g.limitInflight(g.handleInference(wire.Chat))))
+	mux.HandleFunc("POST /v1/responses", g.authenticate(g.limitInflight(g.handleInference(wire.Responses))))
+	mux.HandleFunc("POST /v1/messages", g.authenticate(g.limitInflight(g.handleInference(wire.Anthropic))))
+	mux.HandleFunc("POST /v1/systemone", g.authenticate(g.limitInflight(g.handleSystemOne)))
 	mux.HandleFunc("GET /healthz", g.handleHealth)
 	return telemetry.Recover(g.logger, mux)
+}
+
+// credentialCandidates returns the API key candidates named by the request
+// headers. It also reports ambiguity: a request that carries both x-api-key
+// and a Bearer token with different values names two keys at once, and is
+// rejected rather than letting either header authenticate it.
+func credentialCandidates(r *http.Request) ([]string, bool) {
+	apiKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+	bearer := ""
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		bearer = strings.TrimSpace(auth[7:])
+	}
+	if apiKey != "" && bearer != "" && apiKey != bearer {
+		return nil, true
+	}
+	candidates := make([]string, 0, 2)
+	if apiKey != "" {
+		candidates = append(candidates, apiKey)
+	}
+	if bearer != "" {
+		candidates = append(candidates, bearer)
+	}
+	return candidates, false
+}
+
+// serverKeyMatches returns the configured server key one of candidates names,
+// or the empty string. Every enabled key is compared even after a match so the
+// timing does not reveal where in the list the matching key sits.
+func (g *Gateway) serverKeyMatches(candidates []string) string {
+	matched := ""
+	for _, key := range g.cfg.ServerKeys {
+		if !g.cfg.ServerKeyEnabled(key) {
+			continue
+		}
+		for _, candidate := range candidates {
+			if len(candidate) == len(key) && subtle.ConstantTimeCompare([]byte(candidate), []byte(key)) == 1 {
+				matched = key
+			}
+		}
+	}
+	return matched
 }
 
 // authenticate admits a request whose x-api-key header or Bearer token
@@ -195,21 +316,16 @@ func (g *Gateway) Handler() http.Handler {
 // the endpoint: Anthropic for /v1/messages, Chat otherwise.
 func (g *Gateway) authenticate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		candidates := []string{strings.TrimSpace(r.Header.Get("x-api-key"))}
-		if auth := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			candidates = append(candidates, strings.TrimSpace(auth[7:]))
-		}
-		matched := ""
-		for _, key := range g.cfg.ServerKeys {
-			if !g.cfg.ServerKeyEnabled(key) {
-				continue
+		candidates, ambiguous := credentialCandidates(r)
+		if ambiguous {
+			protocol := wire.Chat
+			if r.URL.Path == "/v1/messages" {
+				protocol = wire.Anthropic
 			}
-			for _, candidate := range candidates {
-				if len(candidate) == len(key) && subtle.ConstantTimeCompare([]byte(candidate), []byte(key)) == 1 {
-					matched = key
-				}
-			}
+			wire.WriteError(w, protocol, http.StatusUnauthorized, "x-api-key and Authorization headers name different keys", "ambiguous_credentials", "")
+			return
 		}
+		matched := g.serverKeyMatches(candidates)
 		if matched == "" {
 			protocol := wire.Chat
 			if r.URL.Path == "/v1/messages" {
@@ -271,9 +387,9 @@ func requestShapeFrom(ctx context.Context) requestShape {
 func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(context.WithValue(r.Context(), requestShapeContextKey{}, &requestShape{}))
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxBodyBytes(r.URL.Path)))
 		if err != nil {
-			wire.WriteError(w, external, http.StatusBadRequest, "request body is too large or unreadable", "invalid_request_error", "")
+			writeBodyError(w, external, err)
 			return
 		}
 		var payload map[string]any
@@ -555,9 +671,9 @@ func (w *deferredStreamWriter) Flush() {
 // or responses model belongs on its own endpoint, where the bridge can convert
 // it.
 func (g *Gateway) handleSystemOne(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxBodyBytes(r.URL.Path)))
 	if err != nil {
-		wire.WriteError(w, wire.SystemOne, http.StatusBadRequest, "request body is too large or unreadable", "invalid_request_error", "")
+		writeBodyError(w, wire.SystemOne, err)
 		return
 	}
 	var payload map[string]any
