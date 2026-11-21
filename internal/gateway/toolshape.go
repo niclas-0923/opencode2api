@@ -13,11 +13,11 @@ import (
 
 // The free tier only accepts agent-shaped traffic, and each lane validates the
 // tool definitions against its own CLI generation. These assets are the
-// genuine definitions captured from the official clients: opencode_tools.json
-// for the 2.x lanes (/inference and /zen/go) and opencode_tools_v1.json for the
-// 1.x lane (/zen).
+// genuine definitions captured from the official clients:
+// opencode_tools_v2.json for the 2.x lanes (/inference and /zen/go) and
+// opencode_tools_v1.json for the 1.x lane (/zen).
 //
-//go:embed opencode_tools.json
+//go:embed opencode_tools_v2.json
 var opencodeToolsV2JSON []byte
 
 //go:embed opencode_tools_v1.json
@@ -29,7 +29,7 @@ type opencodeToolDefinition struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-// v2OfficialToolOrder is the key order of opencode_tools.json, made explicit
+// v2OfficialToolOrder is the key order of opencode_tools_v2.json, made explicit
 // because Go maps do not preserve it. Tool order is not validated upstream, but
 // keeping the captured order makes the wire body stable.
 var v2OfficialToolOrder = []string{
