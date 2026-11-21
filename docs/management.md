@@ -70,7 +70,7 @@ Saving validates the candidate, builds its runtime, persists the configuration, 
 
 Server keys, proxies, timeouts, upstreams, models, reasoning, and logging apply to new requests without a restart. Changes to `listen` and `webui.enabled` require restart; the UI shows configured and effective listeners. After editing the file manually, select the disk reload action or call `POST /api/config/reload`. The program does not watch the file automatically.
 
-`POST /api/config/reveal` requires a management session, CSRF, and password verification again. It can return server keys and proxy values, but never the password or password hash. Use it only when copying a value is necessary, and keep its output out of logs and shared material.
+`POST /api/config/reveal` requires a management session, CSRF, and password verification again. It can return server keys and proxy values, but never the password or password hash. A failed re-verification shares the login backoff, and successful reveals are audited by key fingerprint. Use it only when copying a value is necessary, and keep its output out of logs and shared material.
 
 Common management defaults:
 
@@ -175,9 +175,11 @@ Request outcomes describe the complete inference. Failed streams count as `strea
 
 Prefixes use the actual `-config` path. Processes do not share sessions, monitoring, or in-memory counters. Avoid concurrent writes to the same state files.
 
-`GET /healthz` shares the API port, requires no authentication, and triggers no upstream check or monitoring count. It returns 503 while the catalog is pending/empty, WARP has no active exit, or required proxies have no healthy node. A usable stale catalog may return 200 with `degraded`; staleness means twice the refresh interval, at least 60 seconds. Readiness does not guarantee the next inference. Public information includes state/counts, without keys or proxy addresses.
+`GET /healthz` shares the API port, requires no authentication for readiness, and triggers no upstream check or monitoring count. It returns 503 while the catalog is pending/empty, WARP has no active exit, or required proxies have no healthy node. A usable stale catalog may return 200 with `degraded`; staleness means twice the refresh interval, at least 60 seconds. Readiness does not guarantee the next inference. Without a server key the response contains only state and readiness; a valid server key also receives the resource summary (catalog state, credential counts, proxy health, WARP topology), without secret values or proxy addresses.
 
-Restrict local use to loopback. Network management needs HTTPS and access controls; the program does not terminate TLS itself. Configuration/backups contain local keys and proxy passwords: limit filesystem permissions or Windows ACLs and exclude them from source sharing. Even redacted, truncated request-body dumps can contain private conversations; enable them only briefly when needed. Do not attach full configuration, reveal output, cookies, authentication headers, or real inference content to troubleshooting reports.
+Restrict local use to loopback. Network management needs HTTPS and access controls; the program does not terminate TLS itself, and a listener beyond loopback is logged as a public-listener warning at startup. Configuration/backups contain local keys and proxy passwords: on Unix startup narrows a loose config file to owner-only, while Windows needs an explicit ACL; exclude them from source sharing. Even redacted, truncated request-body dumps can contain private conversations; enable them only briefly when needed. Do not attach full configuration, reveal output, cookies, authentication headers, or real inference content to troubleshooting reports.
+
+Configuration saves and reloads, account changes, secret reveals, and API key creation, updates, and deletion emit non-secret audit events to the stdout log. They carry client IP, key fingerprints, and restart fields, never plaintext keys or passwords.
 
 ## Verification and maintenance
 

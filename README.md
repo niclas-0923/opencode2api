@@ -110,9 +110,9 @@ The following are the existing compatibility routes. Set an OpenAI-compatible cl
 | `POST` | `/v1/responses` | Responses, JSON or SSE. |
 | `POST` | `/v1/messages` | Anthropic Messages, JSON or SSE. |
 | `POST` | `/v1/systemone` | Native System One decisions, without protocol translation. |
-| `GET` | `/healthz` | Unauthenticated readiness and resource summary. |
+| `GET` | `/healthz` | Readiness probe; the full resource summary requires a server key. |
 
-All `/v1/*` routes require an enabled `server_keys` value in `Authorization: Bearer ...` or `x-api-key`. Requests are limited to 32 MiB. Inference responses carry `x-request-id` for log correlation.
+All `/v1/*` routes require an enabled `server_keys` value in `Authorization: Bearer ...` or `x-api-key`. Request bodies default to 4 MiB (16 MiB for `/v1/responses`) and can be raised to 32 MiB; see `performance.max_request_bytes` and `performance.max_attachment_bytes`. Inference responses carry `x-request-id` for log correlation.
 
 Discover the actual model IDs before making a request:
 
@@ -192,6 +192,9 @@ Every inference request uses the anonymous free channel only; there is no key, O
 | `performance.max_idle_conns_per_host` | `256` | Idle connections per host/transport. |
 | `performance.max_conns_per_host` | `0` | Connection cap; zero means unlimited. |
 | `performance.idle_conn_timeout_seconds` | `120` | Idle connection lifetime. |
+| `performance.max_inflight` | `32` | Concurrent inference requests before the gateway returns 429. |
+| `performance.max_request_bytes` | `4194304` | Request body cap in bytes; `/v1/responses` uses `max_attachment_bytes`. |
+| `performance.max_attachment_bytes` | `16777216` | Body cap for `/v1/responses`; at most `33554432`. |
 
 `proxies` accepts `direct`, HTTP, HTTPS, SOCKS5, and SOCKS5H URLs. `proxyfile` adds one proxy per nonempty line, relative to the configuration directory; entries are deduplicated and an empty resolved list means direct access. Line comments start with `#`, `;`, or `//` at the beginning or after whitespace. Credentials embedded in proxy URLs are secrets.
 
@@ -251,7 +254,7 @@ Configuration saves validate and construct a replacement runtime before applying
 
 Names use the actual configuration path. Monitoring survives hot reloads but is not shared across processes. Token counts use upstream-reported usage; missing usage is not estimated. Request completion and upstream header-attempt metrics measure different things. Playground has a separate usage bucket. The recent-hour buffers retain at most 10,000 requests/20,000 attempts and return at most 500 of each.
 
-`GET /healthz` makes no upstream request and requires no key. Pending/empty discovery, unavailable WARP, or missing required healthy proxies return 503. A usable stale catalog can return 200 with `status: "degraded"`; stale means older than twice the refresh interval, at least 60 seconds. Readiness is not proof of a valid key, remaining allowance, or successful inference. The public response contains counts/status, not secret values or proxy addresses.
+`GET /healthz` makes no upstream request and requires no key for readiness. Pending/empty discovery, unavailable WARP, or missing required healthy proxies return 503. A usable stale catalog can return 200 with `status: "degraded"`; stale means older than twice the refresh interval, at least 60 seconds. Readiness is not proof of a valid key, remaining allowance, or successful inference. Without a server key the response contains only `status` and `ready`; a valid server key additionally receives the resource summary (catalog state, credential counts, proxy health, WARP topology), never secret values or proxy addresses.
 
 Keep the 8080 listener on loopback for local use. For network access, use HTTPS and restrict access to management. A reverse proxy must pass the original Host header and set `X-Forwarded-Proto` to `https`. Listing the proxy's address in `webui.trusted_proxies` (IP or CIDR) makes the rightmost `X-Forwarded-For` entry each client's identity behind the login and Playground rate limits, and restricts `X-Forwarded-Proto` handling to trusted peers; the proxy must set or append `X-Forwarded-For` itself rather than passing a client-supplied value through. Without that setting, rate limiting uses the direct peer, so clients behind one proxy share its limits. The executable itself serves HTTP; secure management responses carry HSTS and `X-Robots-Tag: noindex`.
 

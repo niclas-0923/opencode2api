@@ -110,9 +110,9 @@ WARP 需要向 Cloudflare `2408` 端口发送 UDP，不需要 host 网络或额�
 | `POST` | `/v1/responses` | Responses，支持 JSON 和 SSE。 |
 | `POST` | `/v1/messages` | Anthropic Messages，支持 JSON 和 SSE。 |
 | `POST` | `/v1/systemone` | 原生 System One 决策透传，不转换协议。 |
-| `GET` | `/healthz` | 无需认证的就绪检查与资源摘要。 |
+| `GET` | `/healthz` | 就绪检查；完整资源摘要需要 server key。 |
 
-全部 `/v1/*` 接口要求通过 `Authorization: Bearer ...` 或 `x-api-key` 提交已启用的 `server_keys` 值。请求体上限为 32 MiB。推理响应的 `x-request-id` 可用于关联日志。
+全部 `/v1/*` 接口要求通过 `Authorization: Bearer ...` 或 `x-api-key` 提交已启用的 `server_keys` 值。请求体默认上限 4 MiB（`/v1/responses` 为 16 MiB），最高可配置到 32 MiB；见 `performance.max_request_bytes` 与 `performance.max_attachment_bytes`。推理响应的 `x-request-id` 可用于关联日志。
 
 先查询实际可用的模型 ID：
 
@@ -192,6 +192,9 @@ Responses 历史中的 assistant reasoning、文本和函数调用会合并为 a
 | `performance.max_idle_conns_per_host` | `256` | 每个 host/transport 的空闲连接上限。 |
 | `performance.max_conns_per_host` | `0` | 连接数上限；零表示不限。 |
 | `performance.idle_conn_timeout_seconds` | `120` | 空闲连接寿命。 |
+| `performance.max_inflight` | `32` | 并发推理请求上限，超出返回 429。 |
+| `performance.max_request_bytes` | `4194304` | 请求体字节上限；`/v1/responses` 使用 `max_attachment_bytes`。 |
+| `performance.max_attachment_bytes` | `16777216` | `/v1/responses` 的请求体上限；最大 `33554432`。 |
 
 `proxies` 支持 `direct`、HTTP、HTTPS、SOCKS5、SOCKS5H URL。`proxyfile` 从配置目录相对路径读取，每个非空行一个代理，合并后去重；最终为空时使用直连。行首或空白后的 `#`、`;`、`//` 表示注释。代理 URL 中的账号密码属于敏感信息。
 
@@ -251,7 +254,7 @@ API Key 页面支持创建、命名、启用、停用、删除。自动 Key 使�
 
 文件名以实际配置路径为前缀。监控保留跨热重载数据，不跨进程共享；Token 只统计上游报告值，不估算缺失用量。完整请求结果与收到响应头为止的尝试指标是不同口径。Playground 用量单独归类。最近一小时最多保留 10,000 请求/20,000 尝试，接口各返回最多 500 条。
 
-`GET /healthz` 不发送上游请求、无需 Key。目录未就绪/为空、WARP 不可用或必要代理全部不健康时返回 503。可用但过期目录可返回 200 及 `status: "degraded"`；过期阈值为两倍刷新间隔，最低 60 秒。就绪不保证 Key 有效、额度充足或推理成功；公开响应只含计数与状态，不含凭证或代理地址。
+`GET /healthz` 不发送上游请求，就绪检查无需 Key。目录未就绪/为空、WARP 不可用或必要代理全部不健康时返回 503。可用但过期目录可返回 200 及 `status: "degraded"`；过期阈值为两倍刷新间隔，最低 60 秒。就绪不保证 Key 有效、额度充足或推理成功；无 Key 时响应仅含 `status` 与 `ready`，携带有效 server key 时额外返回资源摘要（目录状态、凭证计数、代理健康、WARP 拓扑），不含凭证或代理地址。
 
 本地使用将 8080 监听在 loopback。网络访问须使用 HTTPS 并限制管理入口。反向代理须透传原始 Host 头并将 `X-Forwarded-Proto` 设为 `https`；将代理接入地址列入 `webui.trusted_proxies`（IP 或 CIDR）后，`X-Forwarded-For` 最右侧地址成为各客户端在登录与 Playground 限流下的身份，且仅受信代理的 `X-Forwarded-Proto` 会被采纳，代理须自行设置或追加该头而不是原样透传客户端的值。不设置该配置时限流使用直连对端地址，同一反向代理后的客户端共享限制。可执行文件本身提供 HTTP；安全的管理响应会携带 HSTS 与 `X-Robots-Tag: noindex`。
 

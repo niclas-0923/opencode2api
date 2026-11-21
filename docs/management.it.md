@@ -35,7 +35,7 @@ Pagine: Panoramica, Diagnostica (rotte modelli, Playground, log live), Guida cli
 
 `GET /api/config` restituisce configurazione attiva, ID/valori mascherati e indirizzo effettivo. `PUT /api/config` accetta il **form completo**, non una PATCH; per conservare una chiave/proxy invia `{"id":"FINGERPRINT"}`, per un nuovo valore `{"value":"..."}`. Il salvataggio valida, costruisce il runtime, persiste e passa al nuovo; in caso di errore il runtime precedente continua. `listen` e `webui.enabled` richiedono riavvio. Dopo modifiche manuali al file usa `POST /api/config/reload`.
 
-`POST /api/config/reveal` richiede sessione, CSRF e nuova verifica password; restituisce solo `server_keys` e proxy, mai password o hash.
+`POST /api/config/reveal` richiede sessione, CSRF e nuova verifica password; restituisce solo `server_keys` e proxy, mai password o hash. Una nuova verifica errata condivide il backoff del login; i reveal riusciti sono registrati con il fingerprint della chiave.
 
 ## Modelli gratuiti
 
@@ -66,9 +66,11 @@ Log: `GET /api/logs?after=SEQ&limit=N` e `GET /api/logs/stream` (SSE con `Last-E
 
 ## Salute, dati, sicurezza
 
-`GET /healthz` usa la stessa porta e non richiede autenticazione; 503 con catalogo vuoto/non pronto, WARP senza uscite o proxy richiesti non sani. Dati sensibili: `config.json`, `config.json.bak`, `*.availability.json`; sessioni, log e statistiche vivono in memoria e si azzerano al riavvio.
+`GET /healthz` usa la stessa porta e non richiede autenticazione per la readiness; 503 con catalogo vuoto/non pronto, WARP senza uscite o proxy richiesti non sani. Senza server key la risposta contiene solo stato e `ready`; una chiave valida riceve anche il riepilogo delle risorse. Dati sensibili: `config.json`, `config.json.bak`, `*.availability.json`; sessioni, log e statistiche vivono in memoria e si azzerano al riavvio.
 
-Usa loopback in locale; l'accesso di rete richiede HTTPS e restrizioni. Se pubblichi il servizio dietro un reverse proxy, elenca l'indirizzo del proxy in `webui.trusted_proxies` (IP o CIDR): i rate limit useranno l'IP reale del client (la voce più a destra di `X-Forwarded-For`) e `X-Forwarded-Proto` sarà accettato solo da quel proxy; il proxy deve impostare o aggiungere quell'header. Deve inoltre inoltrare l'Host originale e impostare `X-Forwarded-Proto: https`, perché influisce sul flag Secure del cookie e sui controlli di origin. Le risposte di gestione dietro HTTPS includono HSTS e `X-Robots-Tag: noindex`. Non allegare configurazione, cookie o contenuti di inferenza reali nelle segnalazioni.
+Usa loopback in locale; l'accesso di rete richiede HTTPS e restrizioni. Su Unix il file di configurazione troppo permissivo viene ristretto al solo proprietario all'avvio; su Windows serve un ACL esplicito. Un listener oltre loopback viene registrato come pubblico perché il programma non termina TLS. Se pubblichi il servizio dietro un reverse proxy, elenca l'indirizzo del proxy in `webui.trusted_proxies` (IP o CIDR): i rate limit useranno l'IP reale del client (la voce più a destra di `X-Forwarded-For`) e `X-Forwarded-Proto` sarà accettato solo da quel proxy; il proxy deve impostare o aggiungere quell'header. Deve inoltre inoltrare l'Host originale e impostare `X-Forwarded-Proto: https`, perché influisce sul flag Secure del cookie e sui controlli di origin. Le risposte di gestione dietro HTTPS includono HSTS e `X-Robots-Tag: noindex`. Non allegare configurazione, cookie o contenuti di inferenza reali nelle segnalazioni.
+
+Salvataggi e ricariche della configurazione, modifiche dell'account, rivelazioni dei segreti e creazione/modifica/eliminazione delle API Key generano eventi di audit non sensibili nel log stdout. Contengono IP del client, impronte delle chiavi e campi che richiedono un riavvio, mai chiavi o password in chiaro.
 
 ## Verifica
 

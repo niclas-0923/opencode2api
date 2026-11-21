@@ -80,7 +80,7 @@ Si pubblica solo la porta 8080. Variabili: `OPENCODE2API_PORT` (predefinita 8080
 
 ## Salute e sviluppo
 
-`GET /healthz` non richiede autenticazione: restituisce 503 se il catalogo non è pronto, WARP non ha uscite attive o i proxy richiesti non hanno nodi sani; 200 (possibilmente `degraded`) quando è utilizzabile.
+`GET /healthz` non richiede autenticazione: restituisce 503 se il catalogo non è pronto, WARP non ha uscite attive o i proxy richiesti non hanno nodi sani; 200 (possibilmente `degraded`) quando è utilizzabile. Senza server key la risposta contiene solo `status` e `ready`; una chiave valida riceve anche il riepilogo delle risorse.
 
 Usa loopback in locale; l'accesso di rete richiede HTTPS e restrizioni sulla gestione. Il reverse proxy deve inoltrare l'header Host originale e impostare `X-Forwarded-Proto: https`. Elenca l'indirizzo del proxy in `webui.trusted_proxies` (IP o CIDR): la voce più a destra di `X-Forwarded-For` diventa l'identità del client per i limiti di login e Playground e solo i proxy fidati possono fornire `X-Forwarded-Proto`; il proxy deve impostare o aggiungere quell'header, non inoltrare il valore inviato dal client. Senza questa configurazione i limiti usano il peer diretto, quindi i client dietro lo stesso proxy condividono le soglie. L'eseguibile serve HTTP; le risposte di gestione dietro HTTPS includono HSTS e `X-Robots-Tag: noindex`.
 

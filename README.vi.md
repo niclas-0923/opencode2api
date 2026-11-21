@@ -80,7 +80,7 @@ Chỉ một cổng 8080 được publish. Biến môi trường: `OPENCODE2API_P
 
 ## Sức khỏe và phát triển
 
-`GET /healthz` không cần xác thực, trả 503 khi danh mục chưa sẵn sàng, WARP không có lối ra hoặc proxy bắt buộc không khỏe; trả 200 (có thể `degraded`) khi dùng được.
+`GET /healthz` không cần xác thực, trả 503 khi danh mục chưa sẵn sàng, WARP không có lối ra hoặc proxy bắt buộc không khỏe; trả 200 (có thể `degraded`) khi dùng được. Không có server key, phản hồi chỉ gồm `status` và `ready`; server key hợp lệ nhận thêm bản tóm tắt tài nguyên.
 
 Chỉ dùng loopback khi chạy cục bộ. Truy cập mạng cần HTTPS và hạn chế quyền vào phần quản trị. Reverse proxy phải truyền nguyên Host gốc và đặt `X-Forwarded-Proto: https`. Liệt kê địa chỉ proxy trong `webui.trusted_proxies` (IP hoặc CIDR) để mục `X-Forwarded-For` bên phải nhất trở thành danh tính client cho giới hạn đăng nhập và Playground, đồng thời chỉ proxy tin cậy mới được chấp nhận `X-Forwarded-Proto`; proxy phải tự đặt hoặc nối thêm header này, không chuyển nguyên giá trị do client gửi. Không có cấu hình đó, giới hạn dùng địa chỉ peer trực tiếp nên các client sau cùng một proxy dùng chung hạn mức. Bản thân chương trình phục vụ HTTP; phản hồi quản trị qua HTTPS mang HSTS và `X-Robots-Tag: noindex`.
 

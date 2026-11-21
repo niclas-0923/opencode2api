@@ -35,7 +35,7 @@ Các trang: Tổng quan, Chẩn đoán (tuyến mô hình, Playground, log trự
 
 `GET /api/config` trả cấu hình đang chạy, ID/giá trị đã che và địa chỉ lắng nghe thực tế. `PUT /api/config` nhận **toàn bộ** biểu mẫu, không phải PATCH; để giữ khóa/proxy cũ, gửi `{"id":"FINGERPRINT"}`, giá trị mới gửi `{"value":"..."}`. Lưu sẽ kiểm tra, dựng runtime mới, ghi tệp rồi chuyển; lỗi thì runtime cũ tiếp tục chạy. `listen` và `webui.enabled` cần khởi động lại. Sửa tệp tay thì gọi `POST /api/config/reload`.
 
-`POST /api/config/reveal` cần phiên, CSRF và xác minh lại mật khẩu; chỉ trả `server_keys` và proxy, không bao giờ trả mật khẩu/hash.
+`POST /api/config/reveal` cần phiên, CSRF và xác minh lại mật khẩu; chỉ trả `server_keys` và proxy, không bao giờ trả mật khẩu/hash. Xác minh lại sai dùng chung backoff với đăng nhập; lần reveal thành công được ghi audit theo fingerprint của key.
 
 ## Mô hình miễn phí
 
@@ -66,9 +66,11 @@ Log: `GET /api/logs?after=SEQ&limit=N` và `GET /api/logs/stream` (SSE, hỗ tr�
 
 ## Sức khỏe, dữ liệu, bảo mật
 
-`GET /healthz` cùng cổng, không cần xác thực; 503 khi danh mục trống/chưa sẵn sàng, WARP không có lối ra hoặc proxy bắt buộc không khỏe. Dữ liệu nhạy cảm: `config.json`, `config.json.bak`, tệp `*.availability.json`; phiên, log và thống kê nằm trong bộ nhớ và mất khi khởi động lại.
+`GET /healthz` cùng cổng, không cần xác thực cho kiểm tra sẵn sàng; 503 khi danh mục trống/chưa sẵn sàng, WARP không có lối ra hoặc proxy bắt buộc không khỏe. Không có server key, phản hồi chỉ gồm trạng thái và `ready`; key hợp lệ nhận thêm bản tóm tắt tài nguyên. Dữ liệu nhạy cảm: `config.json`, `config.json.bak`, tệp `*.availability.json`; phiên, log và thống kê nằm trong bộ nhớ và mất khi khởi động lại.
 
-Chỉ dùng loopback khi chạy cục bộ; truy cập mạng cần HTTPS và giới hạn. Khi đưa lên sau reverse proxy, liệt kê địa chỉ proxy trong `webui.trusted_proxies` (IP hoặc CIDR) để rate limit dùng IP thật của client (mục `X-Forwarded-For` bên phải nhất) và chỉ chấp nhận `X-Forwarded-Proto` từ proxy đó; proxy phải tự đặt hoặc nối thêm header này. Proxy cũng phải truyền nguyên Host gốc và đặt `X-Forwarded-Proto: https` vì nó ảnh hưởng cờ Secure của cookie và kiểm tra origin. Phản hồi quản trị qua HTTPS mang HSTS và `X-Robots-Tag: noindex`. Không gửi kèm cấu hình, cookie hay nội dung suy luận thật khi báo lỗi.
+Chỉ dùng loopback khi chạy cục bộ; truy cập mạng cần HTTPS và giới hạn. Trên Unix, tệp cấu hình có quyền quá rộng được thu hẹp còn chủ sở hữu khi khởi động; trên Windows phải đặt ACL. Địa chỉ lắng nghe ngoài loopback được ghi cảnh báo vì chương trình không tự kết thúc TLS. Khi đưa lên sau reverse proxy, liệt kê địa chỉ proxy trong `webui.trusted_proxies` (IP hoặc CIDR) để rate limit dùng IP thật của client (mục `X-Forwarded-For` bên phải nhất) và chỉ chấp nhận `X-Forwarded-Proto` từ proxy đó; proxy phải tự đặt hoặc nối thêm header này. Proxy cũng phải truyền nguyên Host gốc và đặt `X-Forwarded-Proto: https` vì nó ảnh hưởng cờ Secure của cookie và kiểm tra origin. Phản hồi quản trị qua HTTPS mang HSTS và `X-Robots-Tag: noindex`. Không gửi kèm cấu hình, cookie hay nội dung suy luận thật khi báo lỗi.
+
+Lưu và tải lại cấu hình, thay đổi tài khoản, tiết lộ bí mật, cùng tạo/cập nhật/xóa API Key đều ghi sự kiện kiểm toán không nhạy cảm ra log stdout. Sự kiện chứa IP máy khách, vân tay khóa và trường cần khởi động lại, không bao giờ chứa khóa hay mật khẩu dạng văn bản thuần.
 
 ## Kiểm tra
 
