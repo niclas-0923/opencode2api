@@ -111,13 +111,17 @@ func (a *Server) staticHandler() http.Handler {
 // framing and no embedding.
 func (a *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		if requestClaimsHTTPS(r) {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
@@ -280,27 +284,31 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		a.logger.Warn("configuration update rejected", "component", "config", "event", "config_rejected", "error", err)
-		writeAdminError(w, http.StatusBadRequest, "configuration_rejected", err.Error())
+		a.logger.Warn("configuration update rejected", "component", "config", "event", "config_rejected", "client_ip", a.clientIP(r), "error", a.manager.Redact(err.Error()))
+		writeAdminError(w, http.StatusBadRequest, "configuration_rejected", a.manager.Redact(err.Error()))
 		return
 	}
+	a.logger.Info("configuration updated", "component", "config", "event", "config_updated", "client_ip", a.clientIP(r), "restart_required", result.RestartRequired, "restart_fields", result.RestartFields)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"result": result, "config": a.configView()})
 }
 
 // handleReload re-reads config.json and applies it, so an edit made on disk
 // takes effect without a restart.
-func (a *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
+func (a *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	result, err := a.manager.Reload()
 	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "reload_failed", err.Error())
+		a.logger.Warn("configuration reload rejected", "component", "config", "event", "config_reload_rejected", "client_ip", a.clientIP(r), "error", a.manager.Redact(err.Error()))
+		writeAdminError(w, http.StatusBadRequest, "reload_failed", a.manager.Redact(err.Error()))
 		return
 	}
+	a.logger.Info("configuration reloaded", "component", "config", "event", "config_reloaded", "client_ip", a.clientIP(r), "restart_required", result.RestartRequired, "restart_fields", result.RestartFields)
 	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 // handleReveal returns the plaintext server and proxy secrets after verifying
 // the current WebUI password, and logs that it happened.
 func (a *Server) handleReveal(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	var input struct {
 		Password string `json:"password"`
 	}
@@ -308,13 +316,25 @@ func (a *Server) handleReveal(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	client := a.clientIP(r)
+	finish, admitted := a.admitPasswordCheck(w, client)
+	if !admitted {
+		return
+	}
+	success := false
+	defer func() { finish(success) }()
 	cfg := a.manager.Config()
 	if !config.VerifyPassword(cfg.WebUI.PasswordHash, input.Password) {
+		a.logger.Warn("sensitive configuration verification failed", "component", "auth", "event", "secrets_reveal_failed", "client_ip", client)
 		writeAdminError(w, http.StatusForbidden, "verification_failed", "password verification failed")
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	a.logger.Info("sensitive configuration revealed", "component", "auth", "event", "secrets_revealed", "client_ip", a.clientIP(r))
+	success = true
+	keyIDs := make([]string, 0, len(cfg.ServerKeys))
+	for _, key := range cfg.ServerKeys {
+		keyIDs = append(keyIDs, config.Fingerprint(key))
+	}
+	a.logger.Info("sensitive configuration revealed", "component", "auth", "event", "secrets_revealed", "client_ip", client, "server_keys", len(cfg.ServerKeys), "server_key_ids", keyIDs, "proxies", len(cfg.Proxies))
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"server_keys": cfg.ServerKeys, "proxies": cfg.Proxies})
 }
 

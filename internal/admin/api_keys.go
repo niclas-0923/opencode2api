@@ -128,6 +128,7 @@ func (a *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, 400, "key_create_failed", a.manager.Redact(err.Error()))
 		return
 	}
+	a.logger.Info("API key created", "component", "auth", "event", "api_key_created", "client_ip", a.clientIP(r), "key_id", config.Fingerprint(key), "name", strings.TrimSpace(input.Name), "generated", input.Value == "")
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, 201, map[string]any{"key": key, "keys": a.apiKeyViews(a.manager.Config())})
 }
@@ -188,6 +189,7 @@ func (a *Server) handleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, 400, "key_update_failed", a.manager.Redact(err.Error()))
 		return
 	}
+	a.logger.Info("API key updated", "component", "auth", "event", "api_key_updated", "client_ip", a.clientIP(r), "key_id", r.PathValue("id"), "rename", input.Name != nil, "enabled_change", input.Enabled != nil)
 	a.handleListAPIKeys(w, r)
 }
 
@@ -197,5 +199,6 @@ func (a *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, 400, "key_delete_failed", a.manager.Redact(err.Error()))
 		return
 	}
+	a.logger.Info("API key deleted", "component", "auth", "event", "api_key_deleted", "client_ip", a.clientIP(r), "key_id", r.PathValue("id"))
 	a.handleListAPIKeys(w, r)
 }

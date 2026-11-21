@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,12 +33,37 @@ type adminSession struct {
 }
 
 // loginWindow is a fixed-window counter for one client: Started is when the
-// window opened and Count the events in it. Login attempts use a five-minute
-// window, Playground requests a one-minute one.
+// window opened and Count the events in it. Password checks (login, secret
+// reveal and account changes) use a five-minute window, Playground requests a
+// one-minute one. Failures counts consecutive failed checks and drives the
+// backoff; BlockedUntil is when the client may try again. Both reset with the
+// window and on success.
 type loginWindow struct {
-	Started time.Time
-	Count   int
+	Started      time.Time
+	Count        int
+	Failures     int
+	BlockedUntil time.Time
 }
+
+// loginAdmission is the decision beginLoginAttempt returns.
+type loginAdmission int
+
+const (
+	// loginAllowed means the caller owns a password-check slot and must
+	// report the outcome through finishLoginAttempt.
+	loginAllowed loginAdmission = iota
+	// loginBusy means the server is already running maxLoginChecks password
+	// hashes; the request changed no per-client counter.
+	loginBusy
+	// loginBlocked means this client must wait out its backoff or window.
+	loginBlocked
+)
+
+// maxLoginChecks bounds concurrent Argon2 verifications. It is a resource
+// guard, not a lockout: an over-limit request is answered 503 and does not
+// consume a client's failure budget, so a burst of slow requests cannot lock
+// the operator out permanently.
+const maxLoginChecks = 4
 
 // handleLogin checks the credentials against the configured username and
 // password hash, creates a session and its CSRF token, and sets the session
@@ -52,11 +78,12 @@ func (a *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if !a.reserveLoginCheck(client) {
-		writeAdminError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts; try again later")
+	finish, admitted := a.admitPasswordCheck(w, client)
+	if !admitted {
 		return
 	}
-	defer a.releaseLoginCheck()
+	success := false
+	defer func() { finish(success) }()
 	cfg := a.manager.Config()
 	usernameMatch := len(input.Username) == len(cfg.WebUI.Username) && subtle.ConstantTimeCompare([]byte(input.Username), []byte(cfg.WebUI.Username)) == 1
 	passwordMatch := config.VerifyPassword(cfg.WebUI.PasswordHash, input.Password)
@@ -65,6 +92,7 @@ func (a *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
+	success = true
 	token, err := randomToken(32)
 	if err != nil {
 		writeAdminError(w, http.StatusInternalServerError, "internal_error", "could not create session")
@@ -88,6 +116,30 @@ func (a *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	a.logger.Info("admin login succeeded", "component", "auth", "event", "login_succeeded", "client_ip", client)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"username": cfg.WebUI.Username, "csrf_token": csrf, "expires_at": expires.UTC()})
+}
+
+// admitPasswordCheck reserves one password-hash slot for client and writes the
+// busy or backoff response itself when the request may not proceed. The caller
+// must invoke finish with the verification outcome. Login, secret reveal and
+// account changes share this budget, so re-verification cannot bypass the login
+// backoff.
+func (a *Server) admitPasswordCheck(w http.ResponseWriter, client string) (finish func(bool), ok bool) {
+	admission, retryAfter := a.beginLoginAttempt(client)
+	switch admission {
+	case loginBusy:
+		w.Header().Set("Retry-After", "1")
+		writeAdminError(w, http.StatusServiceUnavailable, "login_busy", "login is busy; retry shortly")
+		return nil, false
+	case loginBlocked:
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeAdminError(w, http.StatusTooManyRequests, "rate_limited", "too many password attempts; try again shortly")
+		return nil, false
+	}
+	return func(success bool) { a.finishLoginAttempt(client, success) }, true
 }
 
 // handleSession reports the current session's username, CSRF token and
@@ -190,11 +242,20 @@ func (a *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	client := a.clientIP(r)
+	finish, admitted := a.admitPasswordCheck(w, client)
+	if !admitted {
+		return
+	}
+	success := false
+	defer func() { finish(success) }()
 	cfg := a.manager.Config()
 	if !config.VerifyPassword(cfg.WebUI.PasswordHash, input.CurrentPassword) {
+		a.logger.Warn("admin account verification failed", "component", "auth", "event", "account_verification_failed", "client_ip", client)
 		writeAdminError(w, http.StatusForbidden, "verification_failed", "current password is incorrect")
 		return
 	}
+	success = true
 	_, err := a.manager.Update(func(latest *config.Config) error {
 		if !a.sessionValid(sessionID(r), *latest) || !config.VerifyPassword(latest.WebUI.PasswordHash, input.CurrentPassword) {
 			return errors.New("management account changed; sign in again")
@@ -208,27 +269,26 @@ func (a *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		writeAdminError(w, http.StatusBadRequest, "account_update_failed", err.Error())
+		// The error can pass through Normalize and persistence; redact it like
+		// the other configuration-update handlers do.
+		writeAdminError(w, http.StatusBadRequest, "account_update_failed", a.manager.Redact(err.Error()))
 		return
 	}
 	a.mu.Lock()
 	a.sessions = make(map[string]adminSession)
 	a.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: a.requestIsSecure(r)})
-	a.logger.Info("admin account updated", "component", "auth", "event", "account_updated", "client_ip", a.clientIP(r))
+	a.logger.Info("admin account updated", "component", "auth", "event", "account_updated", "client_ip", client)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"updated": true, "reauthenticate": true})
 }
 
-// reserveLoginCheck counts an attempt before password verification, so
-// concurrent requests cannot all pass the same failure count. Four active
-// checks bound the memory used by the deliberately expensive Argon2 hashes;
-// each client gets at most five attempts until a successful login clears them.
-func (a *Server) reserveLoginCheck(client string) bool {
+// beginLoginAttempt reserves one password check for client and reports whether
+// it may run now. The attempt is counted before verification so concurrent
+// requests cannot all pass the same cap; the caller reports the outcome
+// through finishLoginAttempt only when the admission was loginAllowed.
+func (a *Server) beginLoginAttempt(client string) (loginAdmission, time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.loginChecks >= 4 {
-		return false
-	}
 	now := time.Now()
 	if len(a.attempts) > 1024 {
 		for address, candidate := range a.attempts {
@@ -238,25 +298,56 @@ func (a *Server) reserveLoginCheck(client string) bool {
 		}
 	}
 	window := a.attempts[client]
-	if window.Started.IsZero() || now.Sub(window.Started) > 5*time.Minute {
-		window = loginWindow{Started: now}
+	if !window.Started.IsZero() && now.Sub(window.Started) > 5*time.Minute {
+		window = loginWindow{}
+	}
+	if !window.BlockedUntil.IsZero() && now.Before(window.BlockedUntil) {
+		return loginBlocked, window.BlockedUntil.Sub(now)
 	}
 	if window.Count >= 5 {
-		return false
+		// The fixed window is exhausted. Waiting it out keeps the cap
+		// bounded instead of extending a penalty indefinitely.
+		return loginBlocked, window.Started.Add(5 * time.Minute).Sub(now)
+	}
+	if a.loginChecks >= maxLoginChecks {
+		return loginBusy, 0
 	}
 	if _, exists := a.attempts[client]; !exists && len(a.attempts) >= 4096 {
 		a.removeOldestLoginWindowLocked()
 	}
+	if window.Started.IsZero() {
+		window.Started = now
+	}
 	window.Count++
 	a.attempts[client] = window
 	a.loginChecks++
-	return true
+	return loginAllowed, 0
 }
 
-func (a *Server) releaseLoginCheck() {
+// finishLoginAttempt releases the reservation and records the outcome. A
+// failure sets an exponential backoff (2, 4, 8, ... seconds) capped at one
+// minute; success clears the client's window.
+func (a *Server) finishLoginAttempt(client string, success bool) {
 	a.mu.Lock()
-	a.loginChecks--
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	if a.loginChecks > 0 {
+		a.loginChecks--
+	}
+	window, ok := a.attempts[client]
+	if !ok {
+		return
+	}
+	if success {
+		delete(a.attempts, client)
+		return
+	}
+	window.Failures++
+	backoff := time.Duration(1<<min(window.Failures, 6)) * time.Second
+	if backoff > time.Minute {
+		backoff = time.Minute
+	}
+	window.BlockedUntil = time.Now().Add(backoff)
+	a.attempts[client] = window
 }
 
 // removeOldestLoginWindowLocked evicts one window so inserting a new client
